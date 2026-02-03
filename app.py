@@ -1,177 +1,226 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression
 import numpy as np
 from urllib.parse import quote
+import io
 
 # =============================================================================
-# 🟢 [기본 설정] Han형님의 깃허브 아이디와 저장소 이름을 적어주세요!
+# 🟢 [설정] Han형님의 깃허브 정보 입력
 # =============================================================================
-GITHUB_USER = "HanYeop"      # 예: 형님의 아이디
-REPO_NAME = "GasProject"     # 예: 저장소 이름
-
-# 깃허브에 올린 엑셀 파일명 (정확해야 합니다!)
+GITHUB_USER = "HanYeop"      # 형님의 깃허브 아이디
+REPO_NAME = "GasProject"     # 저장소 이름
 EXCEL_FILE_NAME = "판매량(계획_실적).xlsx"
 
-# 엑셀 파일 내부의 시트(Sheet) 이름
-SHEET_VOL = "실적_부피"
-SHEET_CAL = "실적_열량"
-# =============================================================================
+# 🟢 [매핑] 형님이 주신 용도별 분류 기준 (그대로 적용)
+USE_COL_TO_GROUP = {
+    "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
+    "일반용": "영업용",
+    "업무난방용": "업무용", "냉방용": "업무용", "주한미군": "업무용",
+    "산업용": "산업용",
+    "수송용(CNG)": "수송용", "수송용(BIO)": "수송용",
+    "열병합용": "열병합", "열병합용1": "열병합", "열병합용2": "열병합",
+    "연료전지용": "연료전지", "열전용설비용": "열전용설비용"
+}
 
-st.set_page_config(page_title="도시가스 판매량 예측 시스템", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="도시가스 판매량 분석 및 예측", page_icon="🔥", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 1. 데이터 로드 함수 (GitHub Excel 연동)
+# 1. 데이터 로드 및 전처리 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=600)
-def load_excel_from_github(user, repo, filename, sheet_name):
-    try:
-        # 파일명 URL 인코딩 (한글, 괄호, 띄어쓰기 처리)
-        encoded_filename = quote(filename)
-        url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{encoded_filename}"
-        
-        # 엑셀 읽기 (openpyxl 엔진 사용)
-        df = pd.read_excel(url, sheet_name=sheet_name, engine='openpyxl')
-        return df, True
-    except Exception as e:
-        return None, False
+def load_data(source_type, uploaded_file=None):
+    # A. 깃허브 로드
+    if source_type == "github":
+        try:
+            url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/main/{quote(EXCEL_FILE_NAME)}"
+            # 깃허브는 read_excel에 url을 바로 넣어도 됩니다 (engine='openpyxl')
+            return pd.read_excel(url, sheet_name=None, engine='openpyxl'), True
+        except Exception as e:
+            return None, False
+    # B. 파일 업로드
+    elif uploaded_file:
+        return pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl'), True
+    return None, False
 
-def preprocess_data(df):
-    if df is None or df.empty: return df, [], None
+def preprocess_data(df_raw):
+    """형님의 코드를 참고하여 데이터를 '그룹'별로 정리하는 함수"""
+    if df_raw is None or df_raw.empty: return pd.DataFrame()
+
+    df = df_raw.copy()
     
-    # 날짜 처리
+    # 1. 날짜 처리 (첫 번째 컬럼을 날짜로 가정)
     date_col = df.columns[0]
-    df[date_col] = pd.to_datetime(df[date_col])
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df['Year'] = df[date_col].dt.year
     df['Month'] = df[date_col].dt.month
+    df = df.dropna(subset=['Year', 'Month']) # 날짜 없는 행 제거
     
-    # 불필요 컬럼 제거
-    exclude = ['연', '월', '소 계', '합계', date_col, 'Year', 'Month', '주한미군']
-    usage_cols = [c for c in df.columns if c not in exclude and "열병합" not in c]
+    # 2. 용도별 그룹 매핑 (Melt: Wide -> Long 변환)
+    # 수치형 컬럼만 선택 (연, 월 제외)
+    value_vars = [c for c in df.columns if c in USE_COL_TO_GROUP.keys()]
     
-    return df, usage_cols, date_col
+    if not value_vars:
+        return pd.DataFrame() # 매핑할 컬럼이 없으면 빈 데이터 반환
+
+    # 데이터 구조 변환 (Unpivot)
+    df_long = df.melt(id_vars=['Year', 'Month'], value_vars=value_vars, 
+                      var_name='상세용도', value_name='판매량')
+    
+    # 3. 그룹 매핑 적용
+    df_long['그룹'] = df_long['상세용도'].map(USE_COL_TO_GROUP)
+    
+    # 4. 결측치 처리 및 그룹별 집계
+    df_long['판매량'] = pd.to_numeric(df_long['판매량'], errors='coerce').fillna(0)
+    
+    # 최종적으로 [연, 월, 그룹] 기준으로 합침
+    df_final = df_long.groupby(['Year', 'Month', '그룹'])['판매량'].sum().reset_index()
+    
+    return df_final
 
 # -----------------------------------------------------------------------------
-# 2. 메인 로직
+# 2. 메인 어플리케이션
 # -----------------------------------------------------------------------------
 def main():
-    # 요청하신 대로 제목 깔끔하게 수정!
-    st.title("🔥 도시가스 중장기 판매량 분석 및 예측") 
-    st.markdown(f"**Data Source: GitHub ({EXCEL_FILE_NAME})**")
+    st.title("🔥 도시가스 판매량 실적분석 및 2035 예측")
+    st.markdown("**Created by Han (Marketing Planning Team)**")
 
     # 사이드바 설정
     with st.sidebar:
         st.header("📂 데이터 연결")
-        data_source = st.radio("데이터 소스", ["☁️ GitHub (기본)", "📂 엑셀 파일 직접 업로드"])
+        data_source = st.radio("데이터 소스", ["☁️ GitHub (기본)", "📂 파일 업로드"], index=0)
+        
+        excel_data = None
+        if data_source.startswith("📂"):
+            uploaded = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
+            if uploaded:
+                excel_data, success = load_data("upload", uploaded)
+        else:
+            excel_data, success = load_data("github")
+            if not success:
+                st.error("깃허브 연결 실패! 아이디/저장소명을 확인하세요.")
         
         st.markdown("---")
         st.header("📊 분석 옵션")
-        tab_mode = st.radio("메뉴 선택", ["1. 판매량 실적분석", "2. 판매량 예측 (2035)"])
+        # 탭 대신 라디오 버튼으로 기능 구분 (형님 요청: 탭 기능 구현)
+        func_mode = st.radio("기능 선택", ["1. 판매량 실적분석", "2. 판매량 예측 (2035)"])
         unit_mode = st.radio("단위 선택", ["부피 (천m³)", "열량 (GJ)"])
 
-    # 데이터 담을 변수
-    df_target = pd.DataFrame()
+    if not success or excel_data is None:
+        st.info("👈 왼쪽에서 데이터를 연결하면 분석이 시작됩니다.")
+        return
+
+    # 단위에 따른 시트 및 데이터 선택
+    sheet_name = "실적_부피" if unit_mode.startswith("부피") else "실적_열량"
+    unit_label = "천m³" if unit_mode.startswith("부피") else "GJ"
+
+    if sheet_name not in excel_data:
+        st.error(f"엑셀 파일에 '{sheet_name}' 시트가 없습니다.")
+        return
+
+    # 데이터 전처리 (형님의 매핑 로직 적용)
+    df_clean = preprocess_data(excel_data[sheet_name])
     
-    # -------------------------------------------------------------------------
-    # A. GitHub 로드 (기본)
-    # -------------------------------------------------------------------------
-    if data_source.startswith("☁️"):
-        # 선택한 단위에 맞는 시트 이름 결정
-        target_sheet = SHEET_VOL if unit_mode.startswith("부피") else SHEET_CAL
-        
-        with st.spinner(f"데이터를 불러오는 중입니다... ({target_sheet})"):
-            df_raw, success = load_excel_from_github(GITHUB_USER, REPO_NAME, EXCEL_FILE_NAME, target_sheet)
-            
-            if not success:
-                st.error("🚨 깃허브에서 파일을 찾지 못했습니다.")
-                st.warning(f"1. 아이디/저장소 이름이 맞나요?\n2. 파일명 '{EXCEL_FILE_NAME}'이 정확한가요?\n3. 시트명 '{target_sheet}'가 있나요?")
-                return
-            else:
-                st.success(f"✅ 데이터 로드 성공! ({target_sheet})")
-                df_target, usage_cols, date_col = preprocess_data(df_raw)
+    if df_clean.empty:
+        st.error("데이터 전처리 실패. 컬럼명(취사용, 업무난방용 등)이 엑셀에 있는지 확인해주세요.")
+        return
 
     # -------------------------------------------------------------------------
-    # B. 직접 업로드 (비상용)
+    # 1. 판매량 실적 분석
     # -------------------------------------------------------------------------
-    else:
-        uploaded_file = st.file_uploader("엑셀 파일(.xlsx)을 업로드해주세요", type=['xlsx'])
-        if uploaded_file:
-            try:
-                target_sheet = SHEET_VOL if unit_mode.startswith("부피") else SHEET_CAL
-                df_raw = pd.read_excel(uploaded_file, sheet_name=target_sheet, engine='openpyxl')
-                df_target, usage_cols, date_col = preprocess_data(df_raw)
-            except ValueError:
-                st.error(f"엑셀 파일 안에 '{target_sheet}' 시트가 없습니다.")
-                return
-        else:
-            st.info("👈 파일을 업로드하면 분석이 시작됩니다.")
-            return
-
-    if df_target.empty: return
-
-    # -------------------------------------------------------------------------
-    # 탭 1: 실적 분석
-    # -------------------------------------------------------------------------
-    if tab_mode.startswith("1"):
-        unit_label = "천m³" if unit_mode.startswith("부피") else "GJ"
-        st.subheader(f"📈 실적 분석 ({unit_label})")
+    if func_mode.startswith("1"):
+        st.subheader(f"📈 판매량 실적 분석 ({unit_label})")
         
-        years = st.slider("기간 선택", int(df_target['Year'].min()), int(df_target['Year'].max()), (2015, 2025))
-        df_sub = df_target[(df_target['Year'] >= years[0]) & (df_target['Year'] <= years[1])]
+        # 필터링
+        all_years = sorted(df_clean['Year'].unique())
+        years = st.slider("분석 기간", min(all_years), max(all_years), (min(all_years), max(all_years)))
+        df_sub = df_clean[(df_clean['Year'] >= years[0]) & (df_clean['Year'] <= years[1])]
         
-        # KPI
-        total = df_sub[usage_cols].sum().sum()
-        st.metric(f"누적 판매량 ({years[0]}~{years[1]})", f"{total:,.0f} {unit_label}")
+        # 요약 KPI
+        total_vol = df_sub['판매량'].sum()
+        col1, col2 = st.columns(2)
+        col1.metric("선택 기간 총 판매량", f"{total_vol:,.0f} {unit_label}")
+        col2.metric("데이터 건수", f"{len(df_sub)} 건")
         
-        # 차트
-        df_yr = df_sub.groupby('Year')[usage_cols].sum().reset_index().melt(id_vars='Year', var_name='용도', value_name='Val')
-        fig1 = px.bar(df_yr, x='Year', y='Val', color='용도', title="연도별 판매량 추이", text_auto='.2s')
+        # 1) 연도별/그룹별 누적 막대 그래프
+        df_yr_grp = df_sub.groupby(['Year', '그룹'])['판매량'].sum().reset_index()
+        fig1 = px.bar(df_yr_grp, x='Year', y='판매량', color='그룹', 
+                      title="연도별 용도(그룹) 판매량 추이", text_auto='.2s')
         st.plotly_chart(fig1, use_container_width=True)
         
-        df_mon = df_sub.groupby('Month')[usage_cols].sum().reset_index().melt(id_vars='Month', var_name='용도', value_name='Val')
-        fig2 = px.line(df_mon, x='Month', y='Val', color='용도', markers=True, title="월별 계절성 패턴")
+        # 2) 월별 계절성 패턴
+        df_mon_grp = df_sub.groupby(['Month', '그룹'])['판매량'].sum().reset_index()
+        fig2 = px.line(df_mon_grp, x='Month', y='판매량', color='그룹', markers=True,
+                       title="월별 계절성 패턴 (합계)")
         fig2.update_xaxes(dtick=1)
         st.plotly_chart(fig2, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # 탭 2: 예측 (2035)
+    # 2. 판매량 예측 (2035)
     # -------------------------------------------------------------------------
     else:
-        unit_label = "천m³" if unit_mode.startswith("부피") else "GJ"
-        st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
+        st.subheader(f"🔮 2035 장기 판매량 예측 ({unit_label})")
+        st.info("💡 과거 데이터를 기반으로 '용도 그룹별' 추세를 분석하여 2035년까지 예측합니다.")
         
+        # 예측 설정
+        groups = sorted(df_clean['그룹'].unique())
         future_years = np.arange(2026, 2036).reshape(-1, 1)
-        res = []
         
-        progress = st.progress(0, text="AI 예측 분석 중...")
+        forecast_results = []
         
-        for i, col in enumerate(usage_cols):
-            tmp = df_target.groupby('Year')[col].sum().reset_index()
-            # 선형 회귀 모델링
+        # 그룹별 반복 예측
+        progress_bar = st.progress(0)
+        for i, grp in enumerate(groups):
+            # 학습 데이터 (연도별 합계)
+            df_train = df_clean[df_clean['그룹'] == grp].groupby('Year')['판매량'].sum().reset_index()
+            
+            if len(df_train) < 2: continue # 데이터 너무 적으면 패스
+            
+            X = df_train['Year'].values.reshape(-1, 1)
+            y = df_train['판매량'].values
+            
+            # 모델링
             model = LinearRegression()
-            model.fit(tmp['Year'].values.reshape(-1, 1), tmp[col].values)
+            model.fit(X, y)
             
-            # 예측값 생성
+            # 예측
             pred = model.predict(future_years)
-            pred = [max(0, p) for p in pred] # 음수 제거
+            pred = [max(0, p) for p in pred] # 음수 방지
             
-            for y, v in zip(tmp['Year'], tmp[col]): res.append({'Year':y, 'Type':'실적', 'Val':v, 'Use':col})
-            for y, v in zip(future_years.flatten(), pred): res.append({'Year':y, 'Type':'예측', 'Val':v, 'Use':col})
+            # 데이터 저장 (실적 + 예측)
+            for yr, val in zip(df_train['Year'], df_train['판매량']):
+                forecast_results.append({'Year': yr, '그룹': grp, '판매량': val, 'Type': '실적'})
+            for yr, val in zip(future_years.flatten(), pred):
+                forecast_results.append({'Year': yr, '그룹': grp, '판매량': val, 'Type': '예측'})
+                
+            progress_bar.progress((i + 1) / len(groups))
             
-            progress.progress((i+1)/len(usage_cols))
-            
-        progress.empty()
-        df_res = pd.DataFrame(res)
+        progress_bar.empty()
         
-        # 예측 차트
-        fig3 = px.line(df_res, x='Year', y='Val', color='Use', line_dash='Type', markers=True, title="2035년까지의 수요 전망")
-        fig3.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1, annotation_text="Forecast")
+        df_forecast = pd.DataFrame(forecast_results)
+        
+        # 전체 합계 라인 추가 (옵션)
+        df_total = df_forecast.groupby(['Year', 'Type'])['판매량'].sum().reset_index()
+        df_total['그룹'] = '전체합계'
+        df_final_plot = pd.concat([df_forecast, df_total])
+        
+        # 차트 시각화
+        fig3 = px.line(df_final_plot, x='Year', y='판매량', color='그룹', line_dash='Type',
+                       markers=True, title="2035년 용도별/전체 장기 전망")
+        
+        # 예측 구간 표시
+        fig3.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1, annotation_text="예측 구간")
         st.plotly_chart(fig3, use_container_width=True)
         
-        # 다운로드
-        df_piv = df_res[df_res['Type']=='예측'].pivot_table(index='Year', columns='Use', values='Val')
-        st.download_button("예측 결과 다운로드 (CSV)", df_piv.to_csv().encode('utf-8-sig'), "forecast.csv")
+        # 데이터 다운로드
+        st.markdown("### 📥 예측 데이터 다운로드")
+        df_pivot = df_forecast[df_forecast['Type'] == '예측'].pivot_table(index='Year', columns='그룹', values='판매량')
+        df_pivot['총합계'] = df_pivot.sum(axis=1)
+        
+        st.dataframe(df_pivot.style.format("{:,.0f}"))
+        st.download_button("엑셀(CSV) 다운로드", df_pivot.to_csv().encode('utf-8-sig'), "forecast_2035.csv")
 
 if __name__ == "__main__":
     main()
