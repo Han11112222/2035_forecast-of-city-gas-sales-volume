@@ -40,7 +40,7 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 1. 데이터 로드 및 전처리 (수정 없음)
+# 1. 데이터 로드 및 전처리 (기존 유지)
 # ─────────────────────────────────────────────────────────
 def _clean_base(df):
     out = df.copy()
@@ -83,104 +83,105 @@ def load_data_simple(uploaded_file=None):
         return None
 
 # ─────────────────────────────────────────────────────────
-# 2. [기능 1] 실적 분석 (그래프 & 표 UI 수정)
+# 2. [기능 1] 실적 분석 (형님 요청사항 반영 완료)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 1. 연도 선택 (다중 선택 가능하게 변경)
-    all_years = sorted(long_df['연'].unique())
+    # 🔴 [필터] 오직 '실적' 데이터만 사용 (계획 제외)
+    df_act = long_df[long_df['계획/실적'] == '실적'].copy()
+    
+    # 🔴 [UI] 연도 선택 (다중 선택)
+    all_years = sorted(df_act['연'].unique())
     if not all_years:
-        st.error("데이터에 연도 정보가 없습니다.")
+        st.error("실적 데이터가 없습니다.")
         return
 
-    # 기본적으로 최근 5년 선택
-    default_years = all_years[-5:] if len(all_years) >= 5 else all_years
+    # 기본값: 최근 2년 비교
+    default_years = all_years[-2:] if len(all_years) >= 2 else all_years
     
-    selected_years = st.multiselect(
-        "분석할 연도를 선택하세요 (다중 선택 가능)",
-        options=all_years,
-        default=default_years
-    )
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected_years = st.multiselect(
+            "비교할 연도를 선택하세요 (여러 개 선택 가능)",
+            options=all_years,
+            default=default_years
+        )
     
     if not selected_years:
         st.warning("연도를 1개 이상 선택해주세요.")
         return
 
-    # 선택된 연도로 데이터 필터링
-    df_filtered = long_df[long_df['연'].isin(selected_years)]
-    
+    # 선택된 연도 데이터만 필터링
+    df_filtered = df_act[df_act['연'].isin(selected_years)]
+
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 그래프 1: 연도별 계획 vs 실적 비교 (막대) + 표
+    # 🔴 [그래프 1] 월별 실적 비교 (막대 그래프, Grouped)
     # ---------------------------------------------------------
-    st.markdown("#### 📅 연도별 계획 대비 실적 현황")
+    st.markdown(f"#### 📅 월별 실적 비교 ({', '.join(map(str, selected_years))})")
     
-    # 데이터 집계 (연, 계획/실적 별 합계)
-    df_yr_compare = df_filtered.groupby(['연', '계획/실적'])['값'].sum().reset_index()
+    # 월별, 연도별 합계 집계
+    df_mon_compare = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
     
-    # 그래프 그리기
+    # Plotly Bar Chart (Barmode='group' -> 옆으로 나란히)
     fig1 = px.bar(
-        df_yr_compare, 
-        x='연', 
+        df_mon_compare, 
+        x='월', 
         y='값', 
-        color='계획/실적', 
+        color='연', 
         barmode='group',
-        text_auto='.2s',
-        color_discrete_map={"계획": "#a0aec0", "실적": "#3182ce"} # 회색, 파란색 계열
+        text_auto='.2s', # 숫자 표시
+        title="월별 실적 비교 (연도별)"
     )
-    fig1.update_layout(xaxis_type='category', yaxis_title=unit_label)
+    fig1.update_layout(
+        xaxis=dict(tickmode='linear', dtick=1), # 1월~12월 모두 표시
+        yaxis_title=unit_label,
+        legend_title="연도"
+    )
     st.plotly_chart(fig1, use_container_width=True)
     
-    # 하단 표 생성 (Pivot Table)
-    pivot_compare = df_yr_compare.pivot(index='연', columns='계획/실적', values='값').fillna(0)
-    pivot_compare['차이'] = pivot_compare['실적'] - pivot_compare['계획']
-    pivot_compare['달성률(%)'] = (pivot_compare['실적'] / pivot_compare['계획'] * 100).fillna(0)
-    
-    # 표 스타일링 및 표시
-    st.markdown("##### 📋 상세 수치 (계획 vs 실적)")
-    st.dataframe(
-        pivot_compare.style.format("{:,.0f}", subset=['계획', '실적', '차이'])
-                           .format("{:,.1f}%", subset=['달성률(%)']),
-        use_container_width=True
-    )
+    # [표 1] 하단 상세 수치
+    st.markdown("##### 📋 월별 상세 실적표")
+    pivot_mon = df_mon_compare.pivot(index='월', columns='연', values='값').fillna(0)
+    st.dataframe(pivot_mon.style.format("{:,.0f}"), use_container_width=True)
     
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 그래프 2: 연도별 용도 누적 그래프 (Stacked Bar) + 표
+    # 🔴 [그래프 2] 연도별 용도 누적 (막대 그래프, Stacked)
     # ---------------------------------------------------------
-    st.markdown("#### 🧱 연도별 용도별 실적 (누적)")
+    st.markdown("#### 🧱 연도별 용도 구성비 (누적)")
     
-    # 실적 데이터만 필터링 -> 연도별, 그룹별 집계
-    df_yr_usage = df_filtered[df_filtered['계획/실적']=='실적'].groupby(['연', '그룹'])['값'].sum().reset_index()
+    # 연도별, 그룹별 합계 집계
+    df_yr_usage = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
     
-    # 그래프 그리기 (Stacked Bar)
+    # Plotly Bar Chart (Barmode='stack' -> 위로 쌓기)
     fig2 = px.bar(
         df_yr_usage, 
         x='연', 
         y='값', 
         color='그룹', 
-        title="연도별 용도 구성비",
+        title="연도별 총 판매량 및 용도 구성",
         text_auto='.2s'
     )
-    fig2.update_layout(xaxis_type='category', yaxis_title=unit_label)
+    fig2.update_layout(
+        xaxis_type='category', # 연도를 카테고리로 취급 (2023.5년 같은거 안나오게)
+        yaxis_title=unit_label,
+        legend_title="용도 그룹"
+    )
     st.plotly_chart(fig2, use_container_width=True)
     
-    # 하단 표 생성 (Pivot Table)
-    st.markdown("##### 📋 상세 수치 (용도별 실적)")
+    # [표 2] 하단 상세 수치
+    st.markdown("##### 📋 연도별/용도별 상세 실적표")
     pivot_usage = df_yr_usage.pivot(index='연', columns='그룹', values='값').fillna(0)
     pivot_usage['합계'] = pivot_usage.sum(axis=1) # 합계 컬럼 추가
     
-    # 표 표시
-    st.dataframe(
-        pivot_usage.style.format("{:,.0f}"),
-        use_container_width=True
-    )
+    st.dataframe(pivot_usage.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 3. [기능 2] 2035 예측 (수정 없음)
+# 3. [기능 2] 2035 예측 (기존 유지)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
