@@ -83,57 +83,56 @@ def load_data_simple(uploaded_file=None):
         return None
 
 # ─────────────────────────────────────────────────────────
-# 2. [기능 1] 실적 분석 (형님 요청사항 반영 완료)
+# 2. [기능 1] 실적 분석 (형님 피드백 반영: 꺾은선 + 연도선택)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 🔴 [필터] 오직 '실적' 데이터만 사용 (계획 제외)
+    # 🔴 [필터] 오직 '실적' 데이터만 사용
     df_act = long_df[long_df['계획/실적'] == '실적'].copy()
     
-    # 🔴 [UI] 연도 선택 (다중 선택)
+    # 🔴 [공통 UI] 연도 선택 버튼 (최상단 배치)
     all_years = sorted(df_act['연'].unique())
     if not all_years:
         st.error("실적 데이터가 없습니다.")
         return
 
-    # 기본값: 최근 2년 비교
-    default_years = all_years[-2:] if len(all_years) >= 2 else all_years
+    # 기본값: 최근 3년
+    default_years = all_years[-3:] if len(all_years) >= 3 else all_years
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        selected_years = st.multiselect(
-            "비교할 연도를 선택하세요 (여러 개 선택 가능)",
-            options=all_years,
-            default=default_years
-        )
+    st.markdown("##### 📅 분석할 연도를 선택하세요")
+    selected_years = st.multiselect(
+        "연도 선택 (다중 선택 가능)",
+        options=all_years,
+        default=default_years,
+        label_visibility="collapsed"
+    )
     
     if not selected_years:
         st.warning("연도를 1개 이상 선택해주세요.")
         return
 
-    # 선택된 연도 데이터만 필터링
+    # 선택된 연도로 데이터 필터링
     df_filtered = df_act[df_act['연'].isin(selected_years)]
 
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 🔴 [그래프 1] 월별 실적 비교 (막대 그래프, Grouped)
+    # 🔴 [그래프 1] 월별 실적 추이 (꺾은선 그래프)
     # ---------------------------------------------------------
-    st.markdown(f"#### 📅 월별 실적 비교 ({', '.join(map(str, selected_years))})")
+    st.markdown(f"#### 📈 월별 실적 추이 비교 ({', '.join(map(str, selected_years))})")
     
     # 월별, 연도별 합계 집계
     df_mon_compare = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
     
-    # Plotly Bar Chart (Barmode='group' -> 옆으로 나란히)
-    fig1 = px.bar(
+    # Plotly Line Chart (형님이 원하신 꺾은선)
+    fig1 = px.line(
         df_mon_compare, 
         x='월', 
         y='값', 
         color='연', 
-        barmode='group',
-        text_auto='.2s', # 숫자 표시
-        title="월별 실적 비교 (연도별)"
+        markers=True, # 점 표시
+        title="월별 실적 추이 (연도별 비교)"
     )
     fig1.update_layout(
         xaxis=dict(tickmode='linear', dtick=1), # 1월~12월 모두 표시
@@ -150,14 +149,14 @@ def render_analysis_dashboard(long_df, unit_label):
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 🔴 [그래프 2] 연도별 용도 누적 (막대 그래프, Stacked)
+    # 🔴 [그래프 2] 연도별 용도 누적 (막대 그래프)
     # ---------------------------------------------------------
-    st.markdown("#### 🧱 연도별 용도 구성비 (누적)")
+    st.markdown(f"#### 🧱 연도별 용도 구성비 ({', '.join(map(str, selected_years))})")
     
     # 연도별, 그룹별 합계 집계
     df_yr_usage = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
     
-    # Plotly Bar Chart (Barmode='stack' -> 위로 쌓기)
+    # Plotly Stacked Bar Chart
     fig2 = px.bar(
         df_yr_usage, 
         x='연', 
@@ -167,7 +166,7 @@ def render_analysis_dashboard(long_df, unit_label):
         text_auto='.2s'
     )
     fig2.update_layout(
-        xaxis_type='category', # 연도를 카테고리로 취급 (2023.5년 같은거 안나오게)
+        xaxis_type='category', # 연도를 카테고리로 (소수점 방지)
         yaxis_title=unit_label,
         legend_title="용도 그룹"
     )
