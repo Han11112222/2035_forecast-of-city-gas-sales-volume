@@ -25,10 +25,10 @@ def set_korean_font():
 
 set_korean_font()
 
-# 🟢 파일명 설정 (형님 파일명)
+# 🟢 파일명 설정
 DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
 
-# 🟢 용도 매핑 (형님 코드 그대로)
+# 🟢 용도 매핑
 USE_COL_TO_GROUP = {
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
     "일반용": "영업용",
@@ -40,7 +40,7 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 1. 데이터 로드 및 전처리 (복잡한 거 다 뺌)
+# 1. 데이터 로드 및 전처리 (수정 없음)
 # ─────────────────────────────────────────────────────────
 def _clean_base(df):
     out = df.copy()
@@ -58,7 +58,7 @@ def make_long(plan_df, actual_df):
         for col in df.columns:
             if col in ["연", "월"]: continue
             group = USE_COL_TO_GROUP.get(col)
-            if not group: continue # 매핑 안된 컬럼은 패스
+            if not group: continue
             
             base = df[["연", "월"]].copy()
             base["그룹"] = group
@@ -72,71 +72,121 @@ def make_long(plan_df, actual_df):
     return long_df.dropna(subset=["연", "월"])
 
 def load_data_simple(uploaded_file=None):
-    """파일이 있으면 읽고, 업로드되면 업로드 파일 읽음"""
     try:
-        # 1. 업로드된 파일이 있으면 우선 사용
         if uploaded_file:
             return pd.ExcelFile(uploaded_file, engine='openpyxl')
-        
-        # 2. 없으면 로컬(같은 폴더) 파일 찾기
         elif Path(DEFAULT_SALES_XLSX).exists():
             return pd.ExcelFile(DEFAULT_SALES_XLSX, engine='openpyxl')
-        
         return None
     except Exception as e:
         st.error(f"파일 읽기 오류: {e}")
         return None
 
 # ─────────────────────────────────────────────────────────
-# 2. [기능 1] 기존 실적 분석 (형님 로직 단순화)
+# 2. [기능 1] 실적 분석 (그래프 & 표 UI 수정)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 연도 필터
-    years = sorted(long_df['연'].unique())
-    if not years: return
+    # 1. 연도 선택 (다중 선택 가능하게 변경)
+    all_years = sorted(long_df['연'].unique())
+    if not all_years:
+        st.error("데이터에 연도 정보가 없습니다.")
+        return
+
+    # 기본적으로 최근 5년 선택
+    default_years = all_years[-5:] if len(all_years) >= 5 else all_years
     
-    c1, c2 = st.columns([1, 2])
-    with c1: sel_year = st.selectbox("기준 연도", years, index=len(years)-1)
+    selected_years = st.multiselect(
+        "분석할 연도를 선택하세요 (다중 선택 가능)",
+        options=all_years,
+        default=default_years
+    )
     
-    # 데이터 필터
-    df_sub = long_df[long_df['연'] == sel_year]
-    
-    # KPI
-    plan_sum = df_sub[df_sub['계획/실적']=='계획']['값'].sum()
-    act_sum = df_sub[df_sub['계획/실적']=='실적']['값'].sum()
-    
-    k1, k2 = st.columns(2)
-    k1.metric("연간 계획", f"{plan_sum:,.0f} {unit_label}")
-    k2.metric("연간 실적", f"{act_sum:,.0f} {unit_label}", delta=f"{act_sum-plan_sum:,.0f}")
+    if not selected_years:
+        st.warning("연도를 1개 이상 선택해주세요.")
+        return
+
+    # 선택된 연도로 데이터 필터링
+    df_filtered = long_df[long_df['연'].isin(selected_years)]
     
     st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 그래프 1: 연도별 계획 vs 실적 비교 (막대) + 표
+    # ---------------------------------------------------------
+    st.markdown("#### 📅 연도별 계획 대비 실적 현황")
     
-    # 월별 추이 그래프
-    st.markdown("#### 📅 월별 추이")
-    grp = df_sub.groupby(['월', '계획/실적'])['값'].sum().reset_index()
-    fig1 = px.line(grp, x='월', y='값', color='계획/실적', markers=True)
-    fig1.update_xaxes(dtick=1)
+    # 데이터 집계 (연, 계획/실적 별 합계)
+    df_yr_compare = df_filtered.groupby(['연', '계획/실적'])['값'].sum().reset_index()
+    
+    # 그래프 그리기
+    fig1 = px.bar(
+        df_yr_compare, 
+        x='연', 
+        y='값', 
+        color='계획/실적', 
+        barmode='group',
+        text_auto='.2s',
+        color_discrete_map={"계획": "#a0aec0", "실적": "#3182ce"} # 회색, 파란색 계열
+    )
+    fig1.update_layout(xaxis_type='category', yaxis_title=unit_label)
     st.plotly_chart(fig1, use_container_width=True)
     
-    # 용도별 구성비
-    st.markdown("#### 🧱 용도별 실적")
-    grp_use = df_sub[df_sub['계획/실적']=='실적'].groupby(['월', '그룹'])['값'].sum().reset_index()
-    fig2 = px.bar(grp_use, x='월', y='값', color='그룹')
+    # 하단 표 생성 (Pivot Table)
+    pivot_compare = df_yr_compare.pivot(index='연', columns='계획/실적', values='값').fillna(0)
+    pivot_compare['차이'] = pivot_compare['실적'] - pivot_compare['계획']
+    pivot_compare['달성률(%)'] = (pivot_compare['실적'] / pivot_compare['계획'] * 100).fillna(0)
+    
+    # 표 스타일링 및 표시
+    st.markdown("##### 📋 상세 수치 (계획 vs 실적)")
+    st.dataframe(
+        pivot_compare.style.format("{:,.0f}", subset=['계획', '실적', '차이'])
+                           .format("{:,.1f}%", subset=['달성률(%)']),
+        use_container_width=True
+    )
+    
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 그래프 2: 연도별 용도 누적 그래프 (Stacked Bar) + 표
+    # ---------------------------------------------------------
+    st.markdown("#### 🧱 연도별 용도별 실적 (누적)")
+    
+    # 실적 데이터만 필터링 -> 연도별, 그룹별 집계
+    df_yr_usage = df_filtered[df_filtered['계획/실적']=='실적'].groupby(['연', '그룹'])['값'].sum().reset_index()
+    
+    # 그래프 그리기 (Stacked Bar)
+    fig2 = px.bar(
+        df_yr_usage, 
+        x='연', 
+        y='값', 
+        color='그룹', 
+        title="연도별 용도 구성비",
+        text_auto='.2s'
+    )
+    fig2.update_layout(xaxis_type='category', yaxis_title=unit_label)
     st.plotly_chart(fig2, use_container_width=True)
+    
+    # 하단 표 생성 (Pivot Table)
+    st.markdown("##### 📋 상세 수치 (용도별 실적)")
+    pivot_usage = df_yr_usage.pivot(index='연', columns='그룹', values='값').fillna(0)
+    pivot_usage['합계'] = pivot_usage.sum(axis=1) # 합계 컬럼 추가
+    
+    # 표 표시
+    st.dataframe(
+        pivot_usage.style.format("{:,.0f}"),
+        use_container_width=True
+    )
 
 # ─────────────────────────────────────────────────────────
-# 3. [기능 2] 2035 예측 (신규 추가)
+# 3. [기능 2] 2035 예측 (수정 없음)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     st.caption("과거 실적 데이터를 기반으로 선형 회귀(Linear Regression) 예측")
     
-    # 실적 데이터만 사용
     df_act = long_df[long_df['계획/실적'] == '실적'].copy()
-    
-    # 연도별/그룹별 합계
     df_train = df_act.groupby(['연', '그룹'])['값'].sum().reset_index()
     
     groups = df_train['그룹'].unique()
@@ -148,13 +198,11 @@ def render_prediction_2035(long_df, unit_label):
         sub = df_train[df_train['그룹'] == grp]
         if len(sub) < 2: continue
         
-        # 예측 모델링
         model = LinearRegression()
         model.fit(sub['연'].values.reshape(-1, 1), sub['값'].values)
         pred = model.predict(future_years)
-        pred = [max(0, p) for p in pred] # 음수 제거
+        pred = [max(0, p) for p in pred]
         
-        # 저장
         for y, v in zip(sub['연'], sub['값']):
             results.append({'연': y, '그룹': grp, '판매량': v, 'Type': '실적'})
         for y, v in zip(future_years.flatten(), pred):
@@ -165,13 +213,11 @@ def render_prediction_2035(long_df, unit_label):
     
     df_res = pd.DataFrame(results)
     
-    # 그래프
     fig = px.line(df_res, x='연', y='판매량', color='그룹', line_dash='Type', markers=True,
                   title=f"2035년까지의 장기 전망 ({unit_label})")
     fig.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1, annotation_text="Forecast")
     st.plotly_chart(fig, use_container_width=True)
     
-    # 다운로드
     piv = df_res[df_res['Type']=='예측'].pivot_table(index='연', columns='그룹', values='판매량')
     piv['합계'] = piv.sum(axis=1)
     st.dataframe(piv.style.format("{:,.0f}"))
@@ -185,7 +231,6 @@ def main():
     
     with st.sidebar:
         st.header("설정")
-        # 데이터 소스: 그냥 파일 있나 보고 없으면 업로드
         uploaded = None
         if not Path(DEFAULT_SALES_XLSX).exists():
             st.warning(f"⚠️ '{DEFAULT_SALES_XLSX}' 파일이 없습니다.")
@@ -199,11 +244,9 @@ def main():
         mode = st.radio("분석 모드", ["1. 실적 분석", "2. 2035 예측"])
         unit = st.radio("단위", ["부피 (천m³)", "열량 (GJ)"])
 
-    # 데이터 로드
     xls = load_data_simple(uploaded)
     if xls is None: return
 
-    # 시트 읽기 및 변환
     try:
         if unit.startswith("부피"):
             df_p = xls.parse("계획_부피")
@@ -220,7 +263,6 @@ def main():
         st.error(f"시트 로드 실패: {e}")
         return
 
-    # 기능 실행
     if mode.startswith("1"):
         render_analysis_dashboard(long_df, unit_label)
     else:
