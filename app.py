@@ -6,8 +6,9 @@ import numpy as np
 import io
 import requests
 from pathlib import Path
-from sklearn.linear_model import LinearRegression
 from urllib.parse import quote
+from sklearn.linear_model import LinearRegression
+from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────
 # 🟢 기본 설정 & 폰트
@@ -26,11 +27,10 @@ def set_korean_font():
 
 set_korean_font()
 
-# 🟢 설정 정보 (형님 깃허브 정보)
+# 🟢 설정 정보
 GITHUB_USER = "HanYeop"
 REPO_NAME = "GasProject"
 DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
-DEFAULT_TEMP_XLSX = "기온_198001_202512.xlsx" # 기온 파일명 (엑셀 기준)
 
 # 🟢 용도 매핑
 USE_COL_TO_GROUP = {
@@ -44,23 +44,11 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 1. 데이터 로드 및 전처리 (가장 확실한 방법으로 복구)
+# 1. 데이터 로드 및 전처리
 # ─────────────────────────────────────────────────────────
-@st.cache_data(ttl=600)
-def load_excel_from_github(filename):
-    """깃허브의 엑셀 파일을 바이너리로 가져와서 읽습니다 (에러 방지)"""
-    try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/main/{quote(filename)}"
-        response = requests.get(url)
-        response.raise_for_status()
-        # 바이너리 데이터를 BytesIO로 감싸서 엑셀 파일로 인식시킴
-        return pd.ExcelFile(io.BytesIO(response.content), engine='openpyxl')
-    except Exception as e:
-        return None
-
 def _clean_base(df):
     out = df.copy()
-    out = out.loc[:, ~out.columns.str.contains('^Unnamed')]
+    if "Unnamed: 0" in out.columns: out = out.drop(columns=["Unnamed: 0"])
     out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
     out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
     return out
@@ -87,234 +75,265 @@ def make_long(plan_df, actual_df):
     long_df = pd.concat(records, ignore_index=True)
     return long_df.dropna(subset=["연", "월"])
 
-# [기온 데이터 처리] 일별 데이터를 월별 평균으로 변환
-def process_temp_data(xls_file):
+def load_data_simple(uploaded_file=None):
     try:
-        # 첫 번째 시트를 읽음
-        df = xls_file.parse(0)
-        
-        # 날짜 컬럼 찾기 (보통 첫 번째 컬럼)
-        date_col = df.columns[0]
-        df[date_col] = pd.to_datetime(df[date_col])
-        
-        # 연/월 추출
-        df['연'] = df[date_col].dt.year
-        df['월'] = df[date_col].dt.month
-        
-        # 기온 컬럼 찾기 ('기온' 글자가 포함된 컬럼)
-        temp_cols = [c for c in df.columns if "기온" in c]
-        if not temp_cols: return None
-        target_col = temp_cols[0]
-        
-        # 월별 평균 집계
-        df_monthly = df.groupby(['연', '월'])[target_col].mean().reset_index()
-        df_monthly.rename(columns={target_col: '평균기온'}, inplace=True)
-        
-        return df_monthly
-    except:
+        if uploaded_file:
+            return pd.ExcelFile(uploaded_file, engine='openpyxl')
+        elif Path(DEFAULT_SALES_XLSX).exists():
+            return pd.ExcelFile(DEFAULT_SALES_XLSX, engine='openpyxl')
+        return None
+    except Exception as e:
+        st.error(f"파일 읽기 오류: {e}")
         return None
 
 # ─────────────────────────────────────────────────────────
-# 2. [기능 1] 실적 분석 (연도 선택 버튼 포함)
+# 2. [기능 1] 실적 분석
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 실적 데이터만, 2025년 이하
-    df_act = long_df[(long_df['계획/실적'] == '실적') & (long_df['연'] <= 2025)].copy()
+    df_act = long_df[long_df['계획/실적'] == '실적'].copy()
+    df_act = df_act[df_act['연'] <= 2025] 
     
     all_years = sorted(df_act['연'].unique())
     if not all_years:
-        st.error("데이터가 없습니다.")
+        st.error("분석할 실적 데이터가 없습니다.")
         return
 
     default_years = all_years[-3:] if len(all_years) >= 3 else all_years
     
     st.markdown("##### 📅 분석할 연도를 선택하세요 (다중 선택)")
-    selected_years = st.multiselect("연도 선택", options=all_years, default=default_years, label_visibility="collapsed")
+    selected_years = st.multiselect(
+        "연도 선택",
+        options=all_years,
+        default=default_years,
+        label_visibility="collapsed"
+    )
     
     if not selected_years:
-        st.warning("연도를 선택해주세요.")
+        st.warning("연도를 1개 이상 선택해주세요.")
         return
 
     df_filtered = df_act[df_act['연'].isin(selected_years)]
     st.markdown("---")
 
-    # 그래프 1 (꺾은선)
+    # [그래프 1] 월별 실적 추이
     st.markdown(f"#### 📈 월별 실적 추이 ({', '.join(map(str, selected_years))})")
-    df_mon = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
-    fig1 = px.line(df_mon, x='월', y='값', color='연', markers=True)
+    df_mon_compare = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
+    
+    fig1 = px.line(
+        df_mon_compare, x='월', y='값', color='연', markers=True,
+        title="월별 실적 추이 비교"
+    )
     fig1.update_layout(xaxis=dict(tickmode='linear', dtick=1), yaxis_title=unit_label)
     st.plotly_chart(fig1, use_container_width=True)
     
-    # 표 1
-    st.markdown("##### 📋 상세 데이터")
-    piv_mon = df_mon.pivot(index='월', columns='연', values='값').fillna(0)
-    st.dataframe(piv_mon.style.format("{:,.0f}"), use_container_width=True)
+    st.markdown("##### 📋 월별 상세 수치")
+    pivot_mon = df_mon_compare.pivot(index='월', columns='연', values='값').fillna(0)
+    st.dataframe(pivot_mon.style.format("{:,.0f}"), use_container_width=True)
     
     st.markdown("---")
 
-    # 그래프 2 (스택바)
+    # [그래프 2] 연도별 용도 누적
     st.markdown(f"#### 🧱 연도별 용도 구성비 ({', '.join(map(str, selected_years))})")
-    df_yr = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
-    fig2 = px.bar(df_yr, x='연', y='값', color='그룹', text_auto='.2s')
+    df_yr_usage = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
+    
+    fig2 = px.bar(
+        df_yr_usage, x='연', y='값', color='그룹',
+        title="연도별 판매량 및 용도 구성", text_auto='.2s'
+    )
     fig2.update_layout(xaxis_type='category', yaxis_title=unit_label)
     st.plotly_chart(fig2, use_container_width=True)
     
-    # 표 2
-    st.markdown("##### 📋 상세 데이터")
-    piv_yr = df_yr.pivot(index='연', columns='그룹', values='값').fillna(0)
-    piv_yr['합계'] = piv_yr.sum(axis=1)
-    st.dataframe(piv_yr.style.format("{:,.0f}"), use_container_width=True)
+    st.markdown("##### 📋 용도별 상세 수치")
+    pivot_usage = df_yr_usage.pivot(index='연', columns='그룹', values='값').fillna(0)
+    pivot_usage['합계'] = pivot_usage.sum(axis=1)
+    st.dataframe(pivot_usage.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 3. [기능 2] 2035 예측 (5가지 모델)
+# 3. [기능 2] 2035 예측 (5가지 추세 분석 모델 적용)
 # ─────────────────────────────────────────────────────────
 def holt_linear_trend(y, n_preds):
+    """지수 평활법 (Holt's Linear Trend) 간단 구현"""
     if len(y) < 2: return np.full(n_preds, y[0])
-    alpha, beta = 0.8, 0.2
-    level, trend = y[0], y[1] - y[0]
+    
+    alpha = 0.8  # 최근 데이터 가중치 (0~1)
+    beta = 0.2   # 추세 가중치 (0~1)
+    
+    level = y[0]
+    trend = y[1] - y[0]
+    
+    # 학습
     for val in y[1:]:
         prev_level = level
         level = alpha * val + (1 - alpha) * (prev_level + trend)
         trend = beta * (level - prev_level) + (1 - beta) * trend
-    return np.array([level + i * trend for i in range(1, n_preds + 1)])
+        
+    # 예측
+    preds = []
+    for i in range(1, n_preds + 1):
+        preds.append(level + i * trend)
+    return np.array(preds)
 
 def render_prediction_2035(long_df, unit_label):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
-    st.markdown("##### 🤖 예측 모델 선택")
+    # 🔴 예측 방법 선택 (5가지)
+    st.markdown("##### 📊 추세 분석 모델 선택")
     pred_method = st.radio(
         "분석 방법",
-        ["1. 선형 추세 (Linear)", "2. 2차 곡선 (Quadratic)", "3. 로그 추세 (Logarithmic)", "4. 지수 평활 (Holt's)", "5. 연평균 성장률 (CAGR)"],
-        index=0, horizontal=True
+        [
+            "1. 선형 추세 (Linear)", 
+            "2. 2차 곡선 (Quadratic)", 
+            "3. 로그 추세 (Logarithmic)",
+            "4. 지수 평활 (Holt's Trend)",
+            "5. 연평균 성장률 (CAGR)"
+        ],
+        index=0,
+        horizontal=True
     )
 
+    # 모델 설명
+    if "선형" in pred_method:
+        st.info("💡 **[선형 추세]** 가장 기본적인 분석법으로, 일정한 기울기로 증가하거나 감소하는 직선 패턴을 예측합니다.")
+    elif "2차" in pred_method:
+        st.info("💡 **[2차 곡선]** 변화의 속도가 가속화되거나 둔화되는 곡선 패턴을 예측합니다.")
+    elif "로그" in pred_method:
+        st.info("💡 **[로그 추세]** 초반에는 빠르게 변하다가 점차 완만해지는(성숙기 진입) 패턴을 예측합니다.")
+    elif "지수 평활" in pred_method:
+        st.info("💡 **[지수 평활(Holt)]** 가장 최근의 실적 데이터와 추세에 더 높은 가중치를 두어 민감하게 예측합니다.")
+    else:
+        st.info("💡 **[CAGR]** 과거 기간의 연평균 성장률(%)을 그대로 적용하여 미래에도 같은 비율로 성장한다고 가정합니다.")
+
+    # 데이터 준비
     df_act = long_df[(long_df['계획/실적'] == '실적') & (long_df['연'] <= 2025)].copy()
     df_train = df_act.groupby(['연', '그룹'])['값'].sum().reset_index()
+    
     groups = df_train['그룹'].unique()
     future_years = np.arange(2026, 2036).reshape(-1, 1)
     results = []
     
     progress = st.progress(0)
+    
     for i, grp in enumerate(groups):
         sub = df_train[df_train['그룹'] == grp]
         if len(sub) < 2: continue
         
-        sub_recent = sub.tail(5) # 최근 5년만 반영
+        # 최근 5년 데이터 사용 (트렌드 반영 보정)
+        sub_recent = sub.tail(5)
         if len(sub_recent) < 2: sub_recent = sub
             
         X = sub_recent['연'].values
         y = sub_recent['값'].values
+        
         pred = []
-
+        
+        # 🟢 1. 선형 회귀 (Linear)
         if "선형" in pred_method:
             model = LinearRegression()
             model.fit(X.reshape(-1,1), y)
             pred = model.predict(future_years)
+            
+        # 🟢 2. 2차 곡선 (Quadratic)
         elif "2차" in pred_method:
             try:
                 coeffs = np.polyfit(X, y, 2)
-                pred = np.poly1d(coeffs)(future_years.flatten())
-            except:
-                model = LinearRegression(); model.fit(X.reshape(-1,1), y); pred = model.predict(future_years)
+                p = np.poly1d(coeffs)
+                pred = p(future_years.flatten())
+            except: # 에러시 선형 대체
+                model = LinearRegression()
+                model.fit(X.reshape(-1,1), y)
+                pred = model.predict(future_years)
+
+        # 🟢 3. 로그 추세 (Logarithmic)
         elif "로그" in pred_method:
             try:
+                # x축을 log로 변환하여 선형회귀 (Y = a + b * ln(X))
+                # 연도 숫자가 크므로(2025) log값 차이가 미미할 수 있어, index(1,2,3...)로 변환해서 적용
                 X_idx = np.arange(1, len(X) + 1).reshape(-1, 1)
-                X_future = np.arange(len(X) + 1, len(X) + 11).reshape(-1, 1)
+                X_future_idx = np.arange(len(X) + 1, len(X) + 11).reshape(-1, 1)
+                
                 model = LinearRegression()
                 model.fit(np.log(X_idx), y)
-                pred = model.predict(np.log(X_future))
+                pred = model.predict(np.log(X_future_idx))
             except:
-                model = LinearRegression(); model.fit(X.reshape(-1,1), y); pred = model.predict(future_years)
-        elif "지수" in pred_method:
-            pred = holt_linear_trend(y, 10)
-        else: # CAGR
+                model = LinearRegression()
+                model.fit(X.reshape(-1,1), y)
+                pred = model.predict(future_years)
+
+        # 🟢 4. 지수 평활 (Holt's Trend)
+        elif "지수 평활" in pred_method:
+            pred = holt_linear_trend(y, n_preds=10)
+
+        # 🟢 5. CAGR
+        else:
             try:
-                start_v, end_v = y[0], y[-1]
+                start_val = y[0] if y[0] > 0 else 1
+                end_val = y[-1]
                 n = len(y) - 1
-                cagr = (end_v/start_v)**(1/n) - 1 if start_v > 0 and end_v > 0 else 0
-                pred = [end_v * (1+cagr)**(j+1) for j in range(10)]
-            except:
-                pred = [y[-1]] * 10
+                if n > 0 and start_val > 0 and end_val > 0:
+                    cagr = (end_val / start_val) ** (1/n) - 1
+                else:
+                    cagr = 0
                 
-        pred = [max(0, p) for p in pred] # 음수 제거
-        
-        for yr, v in zip(sub['연'], sub['값']): results.append({'연': yr, '그룹': grp, '판매량': v, 'Type': '실적'})
-        for yr, v in zip(future_years.flatten(), pred): results.append({'연': yr, '그룹': grp, '판매량': v, 'Type': '예측'})
+                current_val = end_val
+                temp_pred = []
+                for _ in range(10):
+                    current_val = current_val * (1 + cagr)
+                    temp_pred.append(current_val)
+                pred = np.array(temp_pred)
+            except:
+                pred = np.full(10, y[-1])
+
+        # 음수 방지
+        pred = [max(0, p) for p in pred]
+
+        # 결과 저장
+        for yr, v in zip(sub['연'], sub['값']):
+            results.append({'연': yr, '그룹': grp, '판매량': v, 'Type': '실적'})
+        for yr, v in zip(future_years.flatten(), pred):
+            results.append({'연': yr, '그룹': grp, '판매량': v, 'Type': '예측'})
+            
         progress.progress((i+1)/len(groups))
     progress.empty()
     
     df_res = pd.DataFrame(results)
     
-    st.markdown("#### 📈 전체 장기 전망")
-    fig = px.line(df_res, x='연', y='판매량', color='그룹', line_dash='Type', markers=True)
-    fig.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1)
-    st.plotly_chart(fig, use_container_width=True)
+    # 그래프 1: 전체 추세선
+    st.markdown("#### 📈 전체 장기 전망 (추세선)")
+    fig_line = px.line(
+        df_res, x='연', y='판매량', color='그룹', 
+        line_dash='Type', markers=True,
+        title=f"용도별 장기 추세 ({unit_label}) - {pred_method.split('.')[1]}"
+    )
+    fig_line.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1, annotation_text="예측 구간")
+    st.plotly_chart(fig_line, use_container_width=True)
     
-    st.markdown("#### 🧱 2035 미래 예측 상세")
-    df_f = df_res[df_res['Type']=='예측']
-    fig2 = px.bar(df_f, x='연', y='판매량', color='그룹', text_auto='.2s')
-    st.plotly_chart(fig2, use_container_width=True)
-    
-    piv = df_f.pivot_table(index='연', columns='그룹', values='판매량')
-    st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
-    st.download_button("다운로드", piv.to_csv().encode('utf-8-sig'), "forecast.csv")
-
-# ─────────────────────────────────────────────────────────
-# 4. [기능 3] 가정용 정밀 분석 (기온 연동)
-# ─────────────────────────────────────────────────────────
-def render_household_analysis(long_df, df_temp, unit_label):
-    st.subheader(f"🏠 가정용 정밀 분석 (기온 영향) [{unit_label}]")
-    
-    if df_temp is None:
-        st.error("🚨 기온 데이터가 없습니다. 좌측에서 파일을 로드해주세요.")
-        return
-
-    # 데이터 병합
-    df_home = long_df[(long_df['그룹'] == '가정용') & (long_df['계획/실적'] == '실적')].copy()
-    df_merged = pd.merge(df_home, df_temp, on=['연', '월'], how='inner')
-    
-    if df_merged.empty:
-        st.warning("기간이 일치하는 데이터가 없습니다.")
-        return
-
-    years = sorted(df_merged['연'].unique())
-    sel_years = st.multiselect("분석 연도", years, default=years[-5:] if len(years)>=5 else years)
-    if not sel_years: return
-    
-    df_final = df_merged[df_merged['연'].isin(sel_years)]
-    
-    # 상관관계
-    corr = df_final['평균기온'].corr(df_final['값'])
-    st.markdown(f"#### 🌡️ 기온 vs 판매량 (상관계수: {corr:.2f})")
-    
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        fig_scatter = px.scatter(df_final, x='평균기온', y='값', color='연', trendline="ols")
-        st.plotly_chart(fig_scatter, use_container_width=True)
-    with c2:
-        if corr < -0.7: st.success("강한 반비례 (정상)")
-        elif corr < -0.3: st.warning("보통 반비례")
-        else: st.error("관계 약함")
-
     st.markdown("---")
     
-    # 시계열 비교
-    st.markdown("#### 📉 기간별 패턴 비교")
-    df_final = df_final.sort_values(['연', '월'])
-    df_final['기간'] = df_final['연'].astype(str) + "-" + df_final['월'].astype(str).str.zfill(2)
+    # 그래프 2: 스택바
+    st.markdown("#### 🧱 2035년 미래 예측 상세")
+    df_forecast_only = df_res[df_res['Type'] == '예측']
     
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=df_final['기간'], y=df_final['값'], name="판매량", marker_color='blue', yaxis='y'))
-    fig.add_trace(go.Scatter(x=df_final['기간'], y=df_final['평균기온'], name="기온(℃)", line=dict(color='red'), yaxis='y2'))
-    
-    fig.update_layout(
-        yaxis=dict(title="판매량"),
-        yaxis2=dict(title="기온", overlaying='y', side='right'),
-        legend=dict(orientation="h", y=1.1)
+    fig_stack = px.bar(
+        df_forecast_only, x='연', y='판매량', color='그룹',
+        title=f"향후 10년 공급량 예측 구성비", text_auto='.2s'
     )
-    st.plotly_chart(fig, use_container_width=True)
+    fig_stack.update_layout(xaxis_type='category', yaxis_title=unit_label)
+    st.plotly_chart(fig_stack, use_container_width=True)
+    
+    # 표 & 다운로드
+    st.markdown("##### 📋 상세 데이터")
+    piv = df_forecast_only.pivot_table(index='연', columns='그룹', values='판매량')
+    piv['합계'] = piv.sum(axis=1)
+    
+    st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
+    st.download_button(
+        label="💾 예측 데이터 다운로드",
+        data=piv.to_csv().encode('utf-8-sig'),
+        file_name=f"forecast_2035.csv",
+        mime="text/csv"
+    )
 
 # ─────────────────────────────────────────────────────────
 # 메인 실행
@@ -324,88 +343,42 @@ def main():
     
     with st.sidebar:
         st.header("설정")
-        
-        # 1. 판매량
-        st.markdown("**1. 판매량 데이터**")
-        sales_src = st.radio("판매량 소스", ["☁️ GitHub", "📂 파일 업로드"], key="s_src")
-        uploaded_sales = None
-        if sales_src == "📂 파일 업로드":
-            uploaded_sales = st.file_uploader("판매량(.xlsx)", type="xlsx", key="up_s")
-            
-        st.markdown("---")
-        
-        # 2. 기온
-        st.markdown("**2. 기온 데이터**")
-        temp_src = st.radio("기온 소스", ["☁️ GitHub", "📂 파일 업로드"], key="t_src")
-        uploaded_temp = None
-        if temp_src == "📂 파일 업로드":
-            uploaded_temp = st.file_uploader("기온(.xlsx, .csv)", type=["xlsx", "csv"], key="up_t")
+        uploaded = None
+        if not Path(DEFAULT_SALES_XLSX).exists():
+            st.warning(f"⚠️ '{DEFAULT_SALES_XLSX}' 파일이 없습니다.")
+            uploaded = st.file_uploader("엑셀 파일 업로드", type="xlsx")
+        else:
+            st.success(f"✅ '{DEFAULT_SALES_XLSX}' 파일 연결됨")
+            if st.checkbox("다른 파일 업로드하기"):
+                uploaded = st.file_uploader("엑셀 파일 업로드", type="xlsx")
 
         st.markdown("---")
-        mode = st.radio("메뉴", ["1. 실적 분석", "2. 2035 예측", "3. 가정용 정밀 분석"])
+        mode = st.radio("분석 모드", ["1. 실적 분석", "2. 2035 예측"])
         unit = st.radio("단위", ["부피 (천m³)", "열량 (GJ)"])
 
-    # 로드 프로세스
-    # A. 판매량
-    xls_sales = None
-    if sales_src == "☁️ GitHub":
-        sales_bytes = load_excel_from_github(DEFAULT_SALES_XLSX)
-        if sales_bytes: xls_sales = sales_bytes
-    elif uploaded_sales:
-        xls_sales = pd.ExcelFile(uploaded_sales, engine='openpyxl')
-        
-    if not xls_sales:
-        st.info("판매량 데이터를 연결해주세요.")
-        return
+    xls = load_data_simple(uploaded)
+    if xls is None: return
 
-    # B. 기온
-    df_temp = None
-    if temp_src == "☁️ GitHub":
-        # 깃허브에서 기온 파일(엑셀) 로드 시도
-        temp_xls = load_excel_from_github(DEFAULT_TEMP_XLSX)
-        if temp_xls: df_temp = process_temp_data(temp_xls)
-    elif uploaded_temp:
-        # 업로드된 파일이 CSV인지 Excel인지 구분
-        try:
-            if uploaded_temp.name.endswith('.csv'):
-                try:
-                    df = pd.read_csv(uploaded_temp, encoding='utf-8-sig')
-                except:
-                    df = pd.read_csv(uploaded_temp, encoding='cp949')
-                # CSV 전처리 (날짜 변환 등)
-                df.iloc[:,0] = pd.to_datetime(df.iloc[:,0])
-                df['연'] = df.iloc[:,0].dt.year
-                df['월'] = df.iloc[:,0].dt.month
-                temp_col = [c for c in df.columns if "기온" in c][0]
-                df_temp = df.groupby(['연', '월'])[temp_col].mean().reset_index()
-                df_temp.rename(columns={temp_col: '평균기온'}, inplace=True)
-            else:
-                df_temp = process_temp_data(pd.ExcelFile(uploaded_temp, engine='openpyxl'))
-        except:
-            st.error("기온 파일 형식을 확인해주세요.")
-
-    # C. 데이터 변환
     try:
         if unit.startswith("부피"):
-            df_p = xls_sales.parse("계획_부피")
-            df_a = xls_sales.parse("실적_부피")
+            df_p = xls.parse("계획_부피")
+            df_a = xls.parse("실적_부피")
             unit_label = "천m³"
         else:
-            df_p = xls_sales.parse("계획_열량")
-            df_a = xls_sales.parse("실적_열량")
+            df_p = xls.parse("계획_열량")
+            df_a = xls.parse("실적_열량")
             unit_label = "GJ"
+            
         long_df = make_long(df_p, df_a)
-    except:
-        st.error("판매량 시트 이름(계획_부피 등)을 확인해주세요.")
+        
+    except Exception as e:
+        st.error(f"시트 로드 실패: {e}")
         return
 
-    # 실행
     if mode.startswith("1"):
         render_analysis_dashboard(long_df, unit_label)
-    elif mode.startswith("2"):
-        render_prediction_2035(long_df, unit_label)
     else:
-        render_household_analysis(long_df, df_temp, unit_label)
+        render_prediction_2035(long_df, unit_label)
 
 if __name__ == "__main__":
     main()
