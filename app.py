@@ -83,86 +83,109 @@ def load_data_simple(uploaded_file=None):
         return None
 
 # ─────────────────────────────────────────────────────────
-# 2. [기능 1] 실적 분석 (연도 선택 2025년까지만)
+# 2. [기능 1] 실적 분석 (✅ 연도 선택 버튼 수정 완료)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 🔴 [필터] 오직 '실적' 데이터만 사용
+    # 🔴 [데이터 준비] 오직 '실적' 데이터만 사용, 2025년까지만
     df_act = long_df[long_df['계획/실적'] == '실적'].copy()
+    df_act = df_act[df_act['연'] <= 2025] # 2025년 이하만
     
-    # 🔴 [보정] 연도는 데이터에 있는 최대값(2025)까지만 가져오기
+    # 🔴 [UI 수정] 연도 선택 버튼 (Multi-Select)
     all_years = sorted(df_act['연'].unique())
-    # 혹시 2026년 이후 데이터가 섞여있다면 제거 (안전장치)
-    all_years = [y for y in all_years if y <= 2025]
-
     if not all_years:
-        st.error("2025년 이전의 실적 데이터가 없습니다.")
+        st.error("분석할 실적 데이터가 없습니다.")
         return
 
-    # 기본값: 가장 최근 연도 포함 3개
+    # 기본값: 최근 3년
     default_years = all_years[-3:] if len(all_years) >= 3 else all_years
     
-    st.markdown("##### 📅 분석할 연도를 선택하세요 (최대 2025년)")
+    st.markdown("##### 📅 분석할 연도를 선택하세요 (다중 선택)")
     selected_years = st.multiselect(
         "연도 선택",
         options=all_years,
         default=default_years,
-        label_visibility="collapsed"
+        label_visibility="collapsed" # 라벨 숨김 (깔끔하게)
     )
     
     if not selected_years:
         st.warning("연도를 1개 이상 선택해주세요.")
         return
 
+    # 🔴 [필터링] 선택된 연도 데이터만 남김
     df_filtered = df_act[df_act['연'].isin(selected_years)]
 
     st.markdown("---")
 
-    # [그래프 1] 월별 실적 추이
+    # ---------------------------------------------------------
+    # [그래프 1] 월별 실적 추이 (꺾은선 그래프)
+    # ---------------------------------------------------------
     st.markdown(f"#### 📈 월별 실적 추이 ({', '.join(map(str, selected_years))})")
+    
+    # 월별, 연도별 합계 집계
     df_mon_compare = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
     
     fig1 = px.line(
-        df_mon_compare, x='월', y='값', color='연', markers=True,
+        df_mon_compare, 
+        x='월', 
+        y='값', 
+        color='연', 
+        markers=True,
         title="월별 실적 추이 비교"
     )
-    fig1.update_layout(xaxis=dict(tickmode='linear', dtick=1), yaxis_title=unit_label)
+    fig1.update_layout(
+        xaxis=dict(tickmode='linear', dtick=1), # 1~12월 표시
+        yaxis_title=unit_label,
+        legend_title="연도"
+    )
     st.plotly_chart(fig1, use_container_width=True)
     
+    # [표 1]
     st.markdown("##### 📋 월별 상세 수치")
     pivot_mon = df_mon_compare.pivot(index='월', columns='연', values='값').fillna(0)
     st.dataframe(pivot_mon.style.format("{:,.0f}"), use_container_width=True)
     
     st.markdown("---")
 
-    # [그래프 2] 연도별 용도 누적
+    # ---------------------------------------------------------
+    # [그래프 2] 연도별 용도 누적 (스택 막대 그래프)
+    # ---------------------------------------------------------
     st.markdown(f"#### 🧱 연도별 용도 구성비 ({', '.join(map(str, selected_years))})")
+    
+    # 연도별, 그룹별 합계 집계
     df_yr_usage = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
     
     fig2 = px.bar(
-        df_yr_usage, x='연', y='값', color='그룹',
-        title="연도별 판매량 및 용도 구성", text_auto='.2s'
+        df_yr_usage, 
+        x='연', 
+        y='값', 
+        color='그룹', 
+        title="연도별 판매량 및 용도 구성",
+        text_auto='.2s'
     )
-    fig2.update_layout(xaxis_type='category', yaxis_title=unit_label)
+    fig2.update_layout(
+        xaxis_type='category', # 연도를 카테고리로
+        yaxis_title=unit_label,
+        legend_title="용도 그룹"
+    )
     st.plotly_chart(fig2, use_container_width=True)
     
+    # [표 2]
     st.markdown("##### 📋 용도별 상세 수치")
     pivot_usage = df_yr_usage.pivot(index='연', columns='그룹', values='값').fillna(0)
     pivot_usage['합계'] = pivot_usage.sum(axis=1)
     st.dataframe(pivot_usage.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 3. [기능 2] 2035 예측 (보정: 최근 5년 트렌드 반영)
+# 3. [기능 2] 2035 예측 (최근 5년 트렌드 반영 보정)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
-    st.info("💡 **[보정됨]** 최근 5년(2021~2025)의 추세를 반영하여 급격한 데이터 왜곡을 방지했습니다.")
+    st.info("💡 **[보정됨]** 최근 5년(2021~2025)의 추세를 반영하여 예측합니다.")
     
-    df_act = long_df[long_df['계획/실적'] == '실적'].copy()
-    
-    # 2025년까지만 학습 데이터로 사용 (혹시 모를 미래 데이터 제외)
-    df_act = df_act[df_act['연'] <= 2025]
+    # 실적 데이터만 사용 (2025년 이하)
+    df_act = long_df[(long_df['계획/실적'] == '실적') & (long_df['연'] <= 2025)].copy()
     
     df_train = df_act.groupby(['연', '그룹'])['값'].sum().reset_index()
     
@@ -176,14 +199,9 @@ def render_prediction_2035(long_df, unit_label):
         sub = df_train[df_train['그룹'] == grp]
         if len(sub) < 2: continue
         
-        # 🔴 [보정 로직] 전체 기간이 아닌, '최근 5년' 데이터만 사용하여 트렌드 학습
-        # 이유: 너무 먼 과거 데이터가 현재의 하락/상승폭을 왜곡하여 0으로 만드는 것을 방지
-        recent_years_limit = 5
-        sub_recent = sub.tail(recent_years_limit)
-        
-        # 데이터가 5년보다 적으면 있는 것만 사용
-        if len(sub_recent) < 2:
-            sub_recent = sub
+        # 🔴 [보정 로직] 최근 5년 데이터만 사용
+        sub_recent = sub.tail(5)
+        if len(sub_recent) < 2: sub_recent = sub
             
         model = LinearRegression()
         model.fit(sub_recent['연'].values.reshape(-1, 1), sub_recent['값'].values)
@@ -191,10 +209,8 @@ def render_prediction_2035(long_df, unit_label):
         pred = model.predict(future_years)
         pred = [max(0, p) for p in pred] # 음수 방지
         
-        # 실적 저장 (전체 기간 보여줌)
         for y, v in zip(sub['연'], sub['값']):
             results.append({'연': y, '그룹': grp, '판매량': v, 'Type': '실적'})
-        # 예측 저장
         for y, v in zip(future_years.flatten(), pred):
             results.append({'연': y, '그룹': grp, '판매량': v, 'Type': '예측'})
             
@@ -203,47 +219,37 @@ def render_prediction_2035(long_df, unit_label):
     
     df_res = pd.DataFrame(results)
     
-    # ---------------------------------------------------------
-    # [상단 그래프] 전체 흐름 (Line Chart)
-    # ---------------------------------------------------------
-    st.markdown("#### 📈 전체 장기 전망 (2015 ~ 2035)")
+    # [상단 그래프] 추세선
+    st.markdown("#### 📈 전체 장기 전망 (추세선)")
     fig_line = px.line(
         df_res, x='연', y='판매량', color='그룹', 
         line_dash='Type', markers=True,
-        title=f"용도별 장기 추세선 ({unit_label})"
+        title=f"용도별 장기 추세 ({unit_label})"
     )
-    # 예측 구간 배경색
     fig_line.add_vrect(x0=2025.5, x1=2035.5, fillcolor="green", opacity=0.1, annotation_text="예측 구간")
     st.plotly_chart(fig_line, use_container_width=True)
     
     st.markdown("---")
     
-    # ---------------------------------------------------------
-    # [하단 그래프] 2026~2035 예측 스택 (Stacked Bar) - 형님 요청사항
-    # ---------------------------------------------------------
-    st.markdown("#### 🧱 2035년 미래 예측 상세 (스택 그래프)")
-    
-    # 예측 데이터만 필터링
+    # [하단 그래프] 스택바
+    st.markdown("#### 🧱 2035년 미래 예측 상세 (스택)")
     df_forecast_only = df_res[df_res['Type'] == '예측']
     
     fig_stack = px.bar(
-        df_forecast_only, 
-        x='연', y='판매량', color='그룹',
-        title=f"향후 10년({future_years[0][0]}~{future_years[-1][0]}) 공급량 예측 구성비",
-        text_auto='.2s'
+        df_forecast_only, x='연', y='판매량', color='그룹',
+        title="향후 10년 공급량 예측 구성비", text_auto='.2s'
     )
     fig_stack.update_layout(xaxis_type='category', yaxis_title=unit_label)
     st.plotly_chart(fig_stack, use_container_width=True)
     
-    # [하단 표 & 다운로드]
+    # [표 & 다운로드]
     st.markdown("##### 📋 미래 예측 데이터 상세")
     piv = df_forecast_only.pivot_table(index='연', columns='그룹', values='판매량')
     piv['합계'] = piv.sum(axis=1)
     
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
-    
     st.download_button(
-        label="💾 예측 데이터 다운로드 (Excel/CSV)",
+        label="💾 예측 데이터 다운로드",
         data=piv.to_csv().encode('utf-8-sig'),
         file_name="forecast_2035.csv",
         mime="text/csv"
