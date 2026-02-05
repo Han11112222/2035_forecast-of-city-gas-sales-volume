@@ -253,11 +253,31 @@ def render_prediction_2035(long_df, unit_label, start_pred_year):
     df_f = df_res[df_res['구분']=='예측']
     st.dataframe(df_f.pivot_table(index='연', columns='그룹', values='값').style.format("{:,.0f}"), use_container_width=True)
 
+def render_household(long_df, df_temp, unit_label):
+    st.subheader(f"🏠 가정용 정밀 분석")
+    if df_temp is None: st.error("🚨 기온 데이터 없음"); return
+
+    df_home = long_df[long_df['그룹'] == '가정용'].copy()
+    df_merged = pd.merge(df_home, df_temp, on=['연', '월'], how='inner')
+    if df_merged.empty: st.warning("데이터 기간 불일치"); return
+
+    years = sorted(df_merged['연'].unique())
+    sel_years = st.multiselect("분석 연도", years, default=years, key="house_years", label_visibility="collapsed")
+    if not sel_years: return
+    
+    df_final = df_merged[df_merged['연'].isin(sel_years)]
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        fig = px.scatter(df_final, x='평균기온', y='값', color='연', trendline="ols", title="기온 vs 판매량")
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        st.metric("상관계수", f"{df_final['평균기온'].corr(df_final['값']):.2f}")
+
 # ─────────────────────────────────────────────────────────
 # 🟢 4. 메인 실행 로직
 # ─────────────────────────────────────────────────────────
 def main():
-    st.title("🔥 도시가스 판매/공급 통합 분석 시스템")
+    st.title("🔥 도시가스 판매량/공급량 통합 분석 시스템")
     
     with st.sidebar:
         st.header("1. 분석 모드 설정")
