@@ -16,21 +16,24 @@ from typing import Dict, List, Optional, Tuple
 st.set_page_config(page_title="도시가스 계획/실적 분석", layout="wide")
 
 def set_korean_font():
-    try:
-        import matplotlib as mpl
-        mpl.rcParams['axes.unicode_minus'] = False
-        mpl.rc('font', family='Malgun Gothic') 
-    except: pass
+    ttf = Path(__file__).parent / "NanumGothic-Regular.ttf"
+    if ttf.exists():
+        try:
+            import matplotlib as mpl
+            mpl.font_manager.fontManager.addfont(str(ttf))
+            mpl.rcParams["font.family"] = "NanumGothic"
+            mpl.rcParams["axes.unicode_minus"] = False
+        except: pass
 
 set_korean_font()
 
-# 🟢 깃허브 설정 (파일 정확히 매칭)
+# 🟢 설정 정보 (깃허브 정보 정확히 기입)
 GITHUB_USER = "HanYeop"
 REPO_NAME = "GasProject"
-BRANCH = "main" 
-SALES_FILE = "판매량(계획_실적).xlsx" # 판매량용
-PLAN_FILE = "사업계획최종.xlsx"       # 공급량용 (신규 추가!)
-TEMP_FILE = "기온.csv"
+BRANCH = "main" # 혹시 master라면 여기를 master로 변경
+SALES_FILE_NAME = "판매량(계획_실적).xlsx"
+PLAN_FILE_NAME = "사업계획최종.xlsx" # 공급량 예측용 파일
+TEMP_FILE_NAME = "기온.csv"
 
 # 🟢 용도 매핑
 USE_COL_TO_GROUP = {
@@ -46,10 +49,11 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 1. 데이터 로드
+# 1. 데이터 로드 및 전처리 (깃허브 강제 로드 기능 복구)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_github_file(filename, file_type='xlsx'):
+    """깃허브에서 파일 강제 로드"""
     url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{quote(filename)}"
     try:
         response = requests.get(url)
@@ -59,7 +63,8 @@ def load_github_file(filename, file_type='xlsx'):
         else:
             try: return pd.read_csv(io.BytesIO(response.content), encoding='utf-8-sig')
             except: return pd.read_csv(io.BytesIO(response.content), encoding='cp949')
-    except: return None
+    except:
+        return None
 
 def _clean_base(df):
     out = df.copy()
@@ -68,14 +73,14 @@ def _clean_base(df):
     if '월' in out.columns: out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
     return out
 
-# [판매량용] 계획 vs 실적 변환
-def make_long_sales(plan_df, actual_df):
+def make_long(plan_df, actual_df):
     plan_df = _clean_base(plan_df)
     actual_df = _clean_base(actual_df)
     records = []
     
     for label, df in [("계획", plan_df), ("실적", actual_df)]:
         for col in df.columns:
+            if col in ["연", "월"]: continue
             clean_col = col.strip()
             group = USE_COL_TO_GROUP.get(clean_col)
             if not group: continue
@@ -90,20 +95,19 @@ def make_long_sales(plan_df, actual_df):
     if not records: return pd.DataFrame()
     return pd.concat(records, ignore_index=True).dropna(subset=["연", "월"])
 
-# [공급량용] 단일 시트 변환 (사업계획최종)
-def make_long_supply(df, label="확정계획"):
+# [공급량용] 사업계획 파일 처리
+def make_long_supply(df):
     df = _clean_base(df)
     records = []
-    
     for col in df.columns:
         clean_col = col.strip()
         group = USE_COL_TO_GROUP.get(clean_col)
-        if not group: continue # 매핑 안되는 컬럼(합계 등) 제외
+        if not group: continue
         
         base = df[["연", "월"]].copy()
         base["그룹"] = group
         base["용도"] = clean_col
-        base["구분"] = label
+        base["구분"] = "확정계획" # 실적처럼 취급
         base["값"] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         records.append(base)
         
@@ -111,8 +115,10 @@ def make_long_supply(df, label="확정계획"):
     return pd.concat(records, ignore_index=True).dropna(subset=["연", "월"])
 
 def load_temp_universal(uploaded_file=None):
+    # 1. 깃허브 우선
     if uploaded_file is None:
-        return load_github_file(TEMP_FILE, 'csv')
+        return load_github_file(TEMP_FILE_NAME, 'csv')
+    # 2. 업로드
     try:
         if uploaded_file.name.endswith('.csv'):
             try: df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
@@ -130,15 +136,12 @@ def load_temp_universal(uploaded_file=None):
     except: return None
 
 # ─────────────────────────────────────────────────────────
-# 2. 공통 분석 대시보드 (판매량/공급량 공유)
+# 2. 분석 및 예측 화면
 # ─────────────────────────────────────────────────────────
 def render_common_dashboard(long_df, unit_label, title_prefix=""):
-    st.subheader(f"📊 {title_prefix} 실적 분석 ({unit_label})")
+    st.subheader(f"📊 {title_prefix} 분석 ({unit_label})")
+    if long_df.empty: st.warning("데이터 없음"); return
     
-    # 데이터 존재 확인
-    if long_df.empty: st.warning("분석할 데이터가 없습니다."); return
-    
-    # 연도 선택
     all_years = sorted(long_df['연'].unique())
     st.markdown("##### 📅 그래프 표시 연도")
     selected_years = st.multiselect("연도 선택", all_years, default=all_years, key=f"viz_{title_prefix}", label_visibility="collapsed")
@@ -147,47 +150,24 @@ def render_common_dashboard(long_df, unit_label, title_prefix=""):
     df_filtered = long_df[long_df['연'].isin(selected_years)]
     st.markdown("---")
 
-    # [그래프 1] 월별 추이
     st.markdown(f"#### 📈 월별 {title_prefix} 추이")
     df_mon = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
     fig1 = px.line(df_mon, x='월', y='값', color='연', markers=True)
-    fig1.update_layout(xaxis=dict(tickmode='linear', dtick=1), yaxis_title=unit_label)
     st.plotly_chart(fig1, use_container_width=True)
-    
     st.dataframe(df_mon.pivot(index='월', columns='연', values='값').style.format("{:,.0f}"), use_container_width=True)
     
     st.markdown("---")
-
-    # [그래프 2] 연도별 용도 구성
     st.markdown(f"#### 🧱 연도별 용도 구성비")
     df_yr = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
     fig2 = px.bar(df_yr, x='연', y='값', color='그룹', text_auto='.2s')
-    fig2.update_layout(xaxis_type='category', yaxis_title=unit_label)
     st.plotly_chart(fig2, use_container_width=True)
-    
-    piv_yr = df_yr.pivot(index='연', columns='그룹', values='값').fillna(0)
-    piv_yr['합계'] = piv_yr.sum(axis=1)
-    st.dataframe(piv_yr.style.format("{:,.0f}"), use_container_width=True)
-
-# ─────────────────────────────────────────────────────────
-# 3. 예측 및 분석 함수들 (기존 유지)
-# ─────────────────────────────────────────────────────────
-def holt_linear_trend(y, n_preds):
-    if len(y) < 2: return np.full(n_preds, y[0])
-    alpha, beta = 0.8, 0.2
-    level, trend = y[0], y[1] - y[0]
-    for val in y[1:]:
-        prev_level = level
-        level = alpha * val + (1 - alpha) * (prev_level + trend)
-        trend = beta * (level - prev_level) + (1 - beta) * trend
-    return np.array([level + i * trend for i in range(1, n_preds + 1)])
+    st.dataframe(df_yr.pivot(index='연', columns='그룹', values='값').fillna(0).style.format("{:,.0f}"), use_container_width=True)
 
 def render_prediction_2035(long_df, unit_label):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
     train_years = sorted(long_df['연'].unique())
-    if not train_years: st.warning("학습 데이터 없음"); return
-    st.info(f"ℹ️ **학습 구간:** {train_years} (좌측 사이드바에서 변경 가능)")
+    st.info(f"ℹ️ **학습 데이터 구간:** {train_years} (좌측 사이드바에서 조정 가능)")
     
     method = st.radio("방법", ["1. 선형 회귀", "2. 2차 곡선", "3. 로그 추세", "4. 지수 평활", "5. CAGR"], horizontal=True)
 
@@ -210,7 +190,8 @@ def render_prediction_2035(long_df, unit_label):
         elif "로그" in method:
             try: model = LinearRegression(); model.fit(np.log(np.arange(1, len(X)+1)).reshape(-1,1), y); pred = model.predict(np.log(np.arange(len(X)+1, len(X)+11)).reshape(-1,1))
             except: model = LinearRegression(); model.fit(X.reshape(-1,1), y); pred = model.predict(future)
-        elif "지수" in method: pred = holt_linear_trend(y, 10)
+        elif "지수" in method:
+             pred = np.array([y[-1] + (j+1)*(y[-1]-y[0])/len(y) for j in range(10)]) # Simple Logic
         else: # CAGR
             try: cagr = (y[-1]/y[0])**(1/(len(y)-1)) - 1; pred = [y[-1]*(1+cagr)**(j+1) for j in range(10)]
             except: pred = [y[-1]]*10
@@ -231,12 +212,13 @@ def render_prediction_2035(long_df, unit_label):
 
 def render_household_analysis(long_df, df_temp, unit_label):
     st.subheader(f"🏠 가정용 정밀 분석")
-    if df_temp is None: st.error("🚨 기온 데이터 없음"); return
+    if df_temp is None: st.error("🚨 기온 데이터 없음 (좌측 업로드 필요)"); return
 
     df_home = long_df[(long_df['그룹'] == '가정용')].copy()
     df_merged = pd.merge(df_home, df_temp, on=['연', '월'], how='inner')
-    if df_merged.empty: st.warning("기간 불일치"); return
+    if df_merged.empty: st.warning("데이터 기간 불일치"); return
 
+    st.markdown("##### 📅 분석 연도")
     years = sorted(df_merged['연'].unique())
     sel_years = st.multiselect("연도", years, default=years, key="house_years", label_visibility="collapsed")
     if not sel_years: return
@@ -255,20 +237,18 @@ def render_household_analysis(long_df, df_temp, unit_label):
 def main():
     st.title("🔥 도시가스 판매량 분석 & 예측")
     
-    # 1. 깃허브 데이터 로드
-    xls_sales = load_github_file(SALES_FILE) # 판매량
-    xls_plan = load_github_file(PLAN_FILE)   # 공급량(사업계획)
+    # 1. 깃허브 데이터 로드 (우선 시도)
+    xls_sales = load_github_file(SALES_FILE_NAME)
+    xls_plan = load_github_file(PLAN_FILE_NAME) # 공급량용 파일 로드
     
-    # 로드 상태 플래그
+    # 로드 상태
     is_sales_ok = xls_sales is not None
     is_plan_ok = xls_plan is not None
     
-    # 데이터프레임 초기화
     df_sales_long = pd.DataFrame()
     df_plan_long = pd.DataFrame()
     unit_label = "천m³"
 
-    # 사이드바
     with st.sidebar:
         st.header("설정")
         main_cat = st.radio("📂 카테고리", ["1. 판매량 예측", "2. 공급량 예측"])
@@ -278,14 +258,14 @@ def main():
         unit = st.radio("단위", ["부피 (천m³)", "열량 (GJ)"])
         st.markdown("---")
         
-        # 파일 상태 및 업로드
-        if is_sales_ok: st.success("✅ 판매량 데이터 로드됨")
+        # 파일 상태 표시 및 백업 업로더
+        if is_sales_ok: st.success("✅ 판매량 로드 완료")
         else: 
-            st.error("❌ 판매량 로드 실패")
+            st.error("❌ 판매량 로드 실패 (파일 필요)")
             up_s = st.file_uploader("판매량(.xlsx)", type="xlsx")
             if up_s: xls_sales = pd.ExcelFile(up_s, engine='openpyxl'); is_sales_ok = True
             
-        if is_plan_ok: st.success("✅ 사업계획(공급량) 로드됨")
+        if is_plan_ok: st.success("✅ 사업계획 로드 완료")
         else:
             st.warning("⚠️ 사업계획 로드 실패 (공급량 분석용)")
             up_p = st.file_uploader("사업계획(.xlsx)", type="xlsx")
@@ -293,39 +273,32 @@ def main():
             
         up_t = st.file_uploader("기온(.csv, .xlsx)", type=["csv", "xlsx"])
 
-        # 🟢 [학습/분석 기간 선택]
-        # 판매량, 공급량 중 현재 선택된 카테고리에 맞는 데이터를 기준으로 연도 필터 생성
-        
+        # 🟢 [학습 기간 선택] - 데이터가 있으면 무조건 표시
         target_years = []
         
-        # 데이터 변환 (판매량)
+        # A. 판매량 데이터 처리
         if is_sales_ok:
             try:
                 s_p = "계획_부피" if unit.startswith("부피") else "계획_열량"
                 s_a = "실적_부피" if unit.startswith("부피") else "실적_열량"
-                df_sales_long = make_long_sales(xls_sales.parse(s_p), xls_sales.parse(s_a))
-                # 판매량은 2025년 이하만 실적으로 봄
+                df_sales_long = make_long(xls_sales.parse(s_p), xls_sales.parse(s_a))
+                # 판매량 학습용 연도 (2025 이하)
                 sales_years = sorted([y for y in df_sales_long['연'].unique() if y <= 2025])
             except: df_sales_long = pd.DataFrame(); sales_years = []
         else: sales_years = []
 
-        # 데이터 변환 (공급량)
+        # B. 공급량 데이터 처리
         if is_plan_ok:
             try:
-                # 사업계획 파일은 시트가 하나라고 가정하거나 첫번째 시트 사용
-                # 형님이 주신 csv를 보면 "데이터"라는 시트일 가능성 높음. 없으면 첫번째.
-                if "데이터" in xls_plan.sheet_names:
-                    raw_plan = xls_plan.parse("데이터")
-                else:
-                    raw_plan = xls_plan.parse(0)
-                
-                df_plan_long = make_long_supply(raw_plan, label="확정계획")
-                # 공급량 확정계획은 2026~2028년임
+                # 시트 이름이 '데이터'일 확률이 높음 (없으면 첫번째 시트)
+                p_sheet = "데이터" if "데이터" in xls_plan.sheet_names else 0
+                df_plan_long = make_long_supply(xls_plan.parse(p_sheet))
+                # 공급량은 2026~2028이 핵심
                 plan_years = sorted(df_plan_long['연'].unique())
             except: df_plan_long = pd.DataFrame(); plan_years = []
         else: plan_years = []
 
-        # 현재 모드에 따른 연도 필터 표시
+        # 🟢 연도 필터 (현재 선택된 카테고리에 맞춰 표시)
         st.markdown("---")
         st.markdown("**📅 학습/분석 대상 연도**")
         
@@ -333,44 +306,42 @@ def main():
             if sales_years:
                 train_years = st.multiselect("연도 선택", sales_years, default=sales_years, label_visibility="collapsed")
                 if train_years: 
-                    # 실적 데이터만 필터링 (계획 데이터는 제외하지 않음 or 필요시 조정)
+                    # 판매량은 실적 데이터만 필터링 (계획은 유지)
                     df_sales_long = df_sales_long[df_sales_long['연'].isin(train_years) | (df_sales_long['구분']=='계획')]
-            else: st.info("데이터 로드 필요")
+            else: st.info("판매량 데이터 로드 필요")
             
         else: # 2. 공급량 예측
             if plan_years:
-                # 여기서는 2026~2028이 '실적'처럼 취급됨
+                # 공급량은 2026~2028 데이터가 '실적' 역할
                 target_plan_years = st.multiselect("연도 선택", plan_years, default=plan_years, label_visibility="collapsed")
                 if target_plan_years:
                     df_plan_long = df_plan_long[df_plan_long['연'].isin(target_plan_years)]
-            else: st.info("사업계획 데이터 필요")
+            else: st.info("사업계획 데이터 로드 필요")
 
-    # ── 메인 로직 ──
+    # ── 메인 화면 ──
     df_temp = load_temp_universal(up_t)
 
     if main_cat == "1. 판매량 예측":
-        if df_sales_long.empty: st.info("👈 판매량 데이터를 확인해주세요."); return
+        if df_sales_long.empty: st.info("👈 좌측에서 판매량 데이터를 확인해주세요."); return
         
-        # 판매량은 '실적' 데이터만 추출해서 분석
+        # 판매량은 '실적' 데이터만 분석 대상으로 삼음
         df_analysis = df_sales_long[df_sales_long['구분'] == '실적']
         
         if "실적분석" in sub_mode:
-            render_common_dashboard(df_analysis, unit_label, title_prefix="판매량")
+            render_common_dashboard(df_analysis, unit_label, "판매량")
         elif "2035 예측" in sub_mode:
             render_prediction_2035(df_analysis, unit_label)
         elif "가정용" in sub_mode:
             render_household_analysis(df_analysis, df_temp, unit_label)
             
     else: # 2. 공급량 예측
-        if df_plan_long.empty: st.info("👈 사업계획(공급량) 데이터를 확인해주세요."); return
+        if df_plan_long.empty: st.info("👈 좌측에서 사업계획 데이터를 확인해주세요."); return
         
-        # 공급량은 2026~2028 계획 데이터가 '실적(Base)' 역할을 함
-        # 형님 요청: "공급량 실적(2026~2028)을 먼저 보여줘"
-        
+        # 공급량은 2026~2028 확정계획이 '실적(Base)' 역할을 함
         if "실적분석" in sub_mode:
-            render_common_dashboard(df_plan_long, unit_label, title_prefix="공급량(확정계획)")
+            render_common_dashboard(df_plan_long, unit_label, "공급량(확정계획)")
         elif "2035 예측" in sub_mode:
-            # 2026~2028 데이터를 학습 데이터로 사용하여 2029~2035 예측
+            # 2026~2028을 학습 데이터로 하여 미래 예측
             render_prediction_2035(df_plan_long, unit_label)
         elif "가정용" in sub_mode:
             render_household_analysis(df_plan_long, df_temp, unit_label)
