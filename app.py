@@ -35,18 +35,18 @@ FILE_SUPPLY_HIST = "상품별공급량_MJ.xlsx"
 FILE_SUPPLY_PLAN = "사업계획최종.xlsx"      
 FILE_TEMP = "기온.csv"
 
-# 🟢 [핵심 수정] MJ 파일에 있는 특이한 컬럼명들 완벽 대응
+# 🟢 [매핑 업데이트] MJ 파일의 컬럼명 완벽 대응
 USE_COL_TO_GROUP = {
     # 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
     "개별난방": "가정용", "중앙난방": "가정용", "가정용소계": "가정용",
     
-    # 영업용 (MJ 파일 특이 명칭 추가)
+    # 영업용
     "일반용": "영업용", "일반용(1)": "영업용", "일반용(2)": "영업용", 
     "영업용_일반용1": "영업용", "영업용_일반용2": "영업용", 
     "일반용1(영업)": "영업용", "일반용2(영업)": "영업용",
     
-    # 업무용 (MJ 파일 특이 명칭 추가)
+    # 업무용
     "업무난방용": "업무용", "냉방용": "업무용", "냉난방용": "업무용", "주한미군": "업무용",
     "업무용_일반용1": "업무용", "업무용_일반용2": "업무용", "업무용_업무난방": "업무용", 
     "업무용_냉난방": "업무용", "업무용_주한미군": "업무용", 
@@ -65,50 +65,54 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 데이터 로드 (형식 무관하게 읽기)
+# 🟢 2. 데이터 로드 (형식 무관 강제 로드)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data_robust(filename, uploaded_file=None):
-    """1.업로드 -> 2.로컬 -> 3.깃허브 순서로 로드"""
+    """
+    확장자가 .xlsx여도 내용이 csv면 csv로 읽어내는 만능 로더
+    """
     
-    # 내부 함수: 파일 객체를 받아서 엑셀/CSV 자동 판별 후 읽기
-    def try_read(file_obj):
-        # 1. 엑셀로 먼저 시도
+    def try_read_any_format(file_obj):
+        # 1. 엑셀로 시도
         try: 
             return pd.ExcelFile(file_obj, engine='openpyxl')
         except:
-            # 2. 실패하면 CSV (utf-8) 시도
-            try:
-                if hasattr(file_obj, 'seek'): file_obj.seek(0)
-                return pd.read_csv(file_obj, encoding='utf-8-sig')
+            # 실패 시 파일 포인터 초기화
+            if hasattr(file_obj, 'seek'): file_obj.seek(0)
+            
+            # 2. CSV (utf-8) 시도
+            try: return pd.read_csv(file_obj, encoding='utf-8-sig')
             except:
-                # 3. 실패하면 CSV (cp949) 시도
-                try:
-                    if hasattr(file_obj, 'seek'): file_obj.seek(0)
-                    return pd.read_csv(file_obj, encoding='cp949')
+                if hasattr(file_obj, 'seek'): file_obj.seek(0)
+                # 3. CSV (cp949) 시도
+                try: return pd.read_csv(file_obj, encoding='cp949')
                 except: return None
 
-    # 1. 업로드 파일이 있는 경우
+    # A. 업로드 파일 우선
     if uploaded_file:
-        return try_read(uploaded_file)
+        return try_read_any_format(uploaded_file)
 
-    # 2. 로컬 파일이 있는 경우
+    # B. 로컬 파일
     if Path(filename).exists():
-        return try_read(filename)
+        # 파일 경로 문자열 대신 파일 객체로 열어서 전달 (안전성 확보)
+        with open(filename, 'rb') as f:
+            content = io.BytesIO(f.read())
+        return try_read_any_format(content)
 
-    # 3. 깃허브 URL 시도
+    # C. 깃허브 URL
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{quote(filename)}"
         response = requests.get(url)
         if response.status_code == 200:
-            return try_read(io.BytesIO(response.content))
+            return try_read_any_format(io.BytesIO(response.content))
     except: pass
     
     return None
 
 def _clean_base(df):
-    """데이터프레임 정리 (연, 월 컬럼 확보)"""
-    # ExcelFile 객체가 들어오면 첫 번째 시트 파싱
+    """데이터프레임 정리"""
+    # 엑셀 객체면 첫 시트 파싱
     if isinstance(df, pd.ExcelFile):
         df = df.parse(0)
         
@@ -116,9 +120,15 @@ def _clean_base(df):
     # 이상한 컬럼 제거
     out = out.loc[:, ~out.columns.str.contains('^Unnamed')]
     
-    # 컬럼명 공백 제거 (매핑 매칭률 높이기 위해)
+    # 컬럼명 공백 제거
     out.columns = out.columns.str.strip()
     
+    # MJ 파일 날짜 처리 (날짜만 있고 연/월 없을 경우)
+    if '날짜' in out.columns and '연' not in out.columns:
+        out['날짜'] = pd.to_datetime(out['날짜'], errors='coerce')
+        out['연'] = out['날짜'].dt.year
+        out['월'] = out['날짜'].dt.month
+
     # 연/월 컬럼 숫자 변환
     if '연' in out.columns: out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
     if '월' in out.columns: out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
@@ -126,13 +136,12 @@ def _clean_base(df):
     return out.dropna(subset=['연', '월'])
 
 def make_long_basic(df, default_label="실적"):
-    """와이드 -> 롱 변환 (매핑 테이블 기준)"""
+    """와이드 포맷 -> 롱 포맷 변환"""
     df = _clean_base(df)
     records = []
     
     for col in df.columns:
         clean_col = col.strip()
-        # 매핑표에 있는 컬럼만 처리
         group = USE_COL_TO_GROUP.get(clean_col)
         if not group: continue
         
@@ -147,13 +156,11 @@ def make_long_basic(df, default_label="실적"):
     return pd.concat(records, ignore_index=True)
 
 def make_long_sales(xls_obj):
-    """판매량 (계획/실적 시트) 변환"""
+    """판매량 변환"""
     if not isinstance(xls_obj, pd.ExcelFile):
-        # CSV 등으로 들어왔으면 그냥 변환
         return make_long_basic(xls_obj, "실적")
 
     records = []
-    # 시트 이름에 '계획', '실적'이 포함된 것 찾기
     sheet_p = [s for s in xls_obj.sheet_names if "계획" in s]
     sheet_a = [s for s in xls_obj.sheet_names if "실적" in s]
     
@@ -171,7 +178,7 @@ def preprocess_temp(df):
     if df is None: return None
     if isinstance(df, pd.ExcelFile): df = df.parse(0)
     
-    # 날짜 컬럼 찾기
+    # 날짜 처리 유연성 확보
     date_cols = [c for c in df.columns if "일자" in c or "날짜" in c or "date" in c.lower()]
     if date_cols:
         df.rename(columns={date_cols[0]: '날짜'}, inplace=True)
@@ -179,7 +186,7 @@ def preprocess_temp(df):
         df.rename(columns={df.columns[0]: '날짜'}, inplace=True)
         
     if '날짜' in df.columns:
-        df['날짜'] = pd.to_datetime(df['날짜'])
+        df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
         df['연'] = df['날짜'].dt.year
         df['월'] = df['날짜'].dt.month
     
@@ -226,7 +233,6 @@ def render_analysis_dashboard(long_df, unit_label, title=""):
 def render_prediction_2035(long_df, unit_label, start_pred_year):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
-    # 학습 데이터 (예측 시작년도 이전 데이터)
     train_df = long_df[long_df['연'] < start_pred_year]
     if train_df.empty: st.warning("과거 실적 데이터가 부족합니다."); return
     
@@ -265,7 +271,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year):
                 
         pred = [max(0, p) for p in pred]
         
-        # 병합
         for yr, v in zip(sub['연'], sub['값']): results.append({'연': yr, '그룹': grp, '값': v, '구분': '실적'})
         for yr, v in zip(future_years.flatten(), pred): results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측'})
         progress.progress((i+1)/len(groups))
@@ -319,12 +324,10 @@ def main():
         
         st.header("2. 데이터 파일 연결")
         
-        # 파일 변수 초기화
         df_final = pd.DataFrame()
         
         if main_cat == "1. 판매량 예측":
             st.caption("판매량 데이터 (계획 vs 실적)")
-            # 1. 깃허브/로컬 로드 시도
             xls = load_data_robust(FILE_SALES)
             up = None
             if xls is None:
@@ -362,6 +365,7 @@ def main():
             try:
                 df_list = []
                 if xls_hist:
+                    # CSV든 Excel이든 자동 처리
                     df_h = make_long_basic(xls_hist, "실적")
                     df_list.append(df_h)
                 
@@ -392,6 +396,9 @@ def main():
     if df_final.empty:
         st.info("👈 좌측 사이드바에서 데이터를 연결해주세요.")
         return
+
+    # 기온 데이터
+    df_temp = load_temp_universal(up_t)
 
     if main_cat == "1. 판매량 예측":
         if "실적분석" in sub_mode:
