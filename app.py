@@ -24,7 +24,7 @@ def set_korean_font():
 
 set_korean_font()
 
-# 🟢 깃허브 설정 (업로드 실패 시 백업용)
+# 🟢 깃허브 설정
 GITHUB_USER = "HanYeop"
 REPO_NAME = "GasProject"
 BRANCH = "main" 
@@ -35,7 +35,7 @@ FILE_SUPPLY_HIST = "상품별공급량_MJ.xlsx"
 FILE_SUPPLY_PLAN = "사업계획최종.xlsx"      
 FILE_TEMP = "기온.csv"
 
-# 🟢 [핵심] 모든 파일의 컬럼명을 완벽하게 대응하는 매핑 (업데이트됨!)
+# 🟢 [핵심 수정] MJ 파일에 있는 특이한 컬럼명들 완벽 대응
 USE_COL_TO_GROUP = {
     # 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
@@ -65,28 +65,30 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 데이터 로드 (업로드 우선 -> 깃허브 백업)
+# 🟢 2. 데이터 로드 (형식 무관하게 읽기)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data_robust(filename, uploaded_file=None):
     """1.업로드 -> 2.로컬 -> 3.깃허브 순서로 로드"""
     
-    # 내부 함수: 파일 객체를 받아서 엑셀 -> CSV(utf-8) -> CSV(cp949) 순서로 시도
+    # 내부 함수: 파일 객체를 받아서 엑셀/CSV 자동 판별 후 읽기
     def try_read(file_obj):
         # 1. 엑셀로 먼저 시도
-        try: return pd.ExcelFile(file_obj, engine='openpyxl')
+        try: 
+            return pd.ExcelFile(file_obj, engine='openpyxl')
         except:
-            # 포인터 초기화
-            if hasattr(file_obj, 'seek'): file_obj.seek(0)
-            # 2. CSV (utf-8) 시도
-            try: return pd.read_csv(file_obj, encoding='utf-8-sig')
-            except:
+            # 2. 실패하면 CSV (utf-8) 시도
+            try:
                 if hasattr(file_obj, 'seek'): file_obj.seek(0)
-                # 3. CSV (cp949) 시도
-                try: return pd.read_csv(file_obj, encoding='cp949')
+                return pd.read_csv(file_obj, encoding='utf-8-sig')
+            except:
+                # 3. 실패하면 CSV (cp949) 시도
+                try:
+                    if hasattr(file_obj, 'seek'): file_obj.seek(0)
+                    return pd.read_csv(file_obj, encoding='cp949')
                 except: return None
 
-    # 1. 업로드 파일이 있는 경우 (최우선)
+    # 1. 업로드 파일이 있는 경우
     if uploaded_file:
         return try_read(uploaded_file)
 
@@ -94,7 +96,7 @@ def load_data_robust(filename, uploaded_file=None):
     if Path(filename).exists():
         return try_read(filename)
 
-    # 3. 깃허브 URL 시도 (백업)
+    # 3. 깃허브 URL 시도
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{quote(filename)}"
         response = requests.get(url)
@@ -105,7 +107,7 @@ def load_data_robust(filename, uploaded_file=None):
     return None
 
 def _clean_base(df):
-    """데이터프레임 정리"""
+    """데이터프레임 정리 (연, 월 컬럼 확보)"""
     # ExcelFile 객체가 들어오면 첫 번째 시트 파싱
     if isinstance(df, pd.ExcelFile):
         df = df.parse(0)
@@ -117,12 +119,6 @@ def _clean_base(df):
     # 컬럼명 공백 제거 (매핑 매칭률 높이기 위해)
     out.columns = out.columns.str.strip()
     
-    # MJ 파일 날짜 처리 (날짜 컬럼이 있고 연/월이 없을 때)
-    if '날짜' in out.columns and '연' not in out.columns:
-        out['날짜'] = pd.to_datetime(out['날짜'], errors='coerce')
-        out['연'] = out['날짜'].dt.year
-        out['월'] = out['날짜'].dt.month
-
     # 연/월 컬럼 숫자 변환
     if '연' in out.columns: out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
     if '월' in out.columns: out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
@@ -130,13 +126,13 @@ def _clean_base(df):
     return out.dropna(subset=['연', '월'])
 
 def make_long_basic(df, default_label="실적"):
-    """와이드 -> 롱 변환 (공급량 등)"""
+    """와이드 -> 롱 변환 (매핑 테이블 기준)"""
     df = _clean_base(df)
     records = []
     
     for col in df.columns:
         clean_col = col.strip()
-        # 매핑표에 있는 컬럼만 처리 (핵심!)
+        # 매핑표에 있는 컬럼만 처리
         group = USE_COL_TO_GROUP.get(clean_col)
         if not group: continue
         
@@ -153,11 +149,11 @@ def make_long_basic(df, default_label="실적"):
 def make_long_sales(xls_obj):
     """판매량 (계획/실적 시트) 변환"""
     if not isinstance(xls_obj, pd.ExcelFile):
-        # CSV 등으로 들어왔으면 그냥 처리
+        # CSV 등으로 들어왔으면 그냥 변환
         return make_long_basic(xls_obj, "실적")
 
     records = []
-    # 시트 이름 추정
+    # 시트 이름에 '계획', '실적'이 포함된 것 찾기
     sheet_p = [s for s in xls_obj.sheet_names if "계획" in s]
     sheet_a = [s for s in xls_obj.sheet_names if "실적" in s]
     
@@ -183,7 +179,7 @@ def preprocess_temp(df):
         df.rename(columns={df.columns[0]: '날짜'}, inplace=True)
         
     if '날짜' in df.columns:
-        df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
+        df['날짜'] = pd.to_datetime(df['날짜'])
         df['연'] = df['날짜'].dt.year
         df['월'] = df['날짜'].dt.month
     
@@ -323,34 +319,44 @@ def main():
         
         st.header("2. 데이터 파일 연결")
         
+        # 파일 변수 초기화
         df_final = pd.DataFrame()
         
         if main_cat == "1. 판매량 예측":
-            st.caption("필요: 판매량(계획_실적).xlsx")
-            up = st.file_uploader("판매량 파일 업로드", type=["xlsx", "csv"])
-            xls = load_data_robust(FILE_SALES, up) # 업로드 없으면 깃허브 로드
+            st.caption("판매량 데이터 (계획 vs 실적)")
+            # 1. 깃허브/로컬 로드 시도
+            xls = load_data_robust(FILE_SALES)
+            up = None
+            if xls is None:
+                st.error("GitHub 로드 실패")
+                up = st.file_uploader("판매량 파일(.xlsx) 업로드", type="xlsx")
+                if up: xls = load_data_robust(FILE_SALES, up)
+            else: st.success("✅ 판매량 파일 연결됨")
             
             if xls:
-                st.success("✅ 판매량 파일 연결됨")
                 try: df_final = make_long_sales(xls)
-                except Exception as e: st.error(f"오류: {e}")
-            else:
-                st.info("파일을 업로드하거나 GitHub 연결을 확인하세요.")
+                except Exception as e: st.error(f"판매량 데이터 처리 오류: {e}")
 
         else: # 2. 공급량 예측
             st.caption("필요: 1)과거실적(MJ), 2)중기계획")
             
             # A. 과거 실적
-            up_h = st.file_uploader("상품별공급량_MJ (과거실적)", type=["xlsx", "csv"])
-            xls_hist = load_data_robust(FILE_SUPPLY_HIST, up_h)
-            if xls_hist: st.success("✅ 과거 실적 연결됨")
-            else: st.warning("⚠️ 과거 실적 파일 필요")
+            xls_hist = load_data_robust(FILE_SUPPLY_HIST)
+            up_h = None
+            if xls_hist is None:
+                st.warning("⚠️ 과거 실적(상품별공급량) 없음")
+                up_h = st.file_uploader("상품별공급량(.xlsx/csv) 업로드", type=["xlsx", "csv"])
+                if up_h: xls_hist = load_data_robust(FILE_SUPPLY_HIST, up_h)
+            else: st.success("✅ 과거 실적 데이터 연결됨")
             
             # B. 중기 계획
-            up_p = st.file_uploader("사업계획최종 (중기계획)", type=["xlsx", "csv"])
-            xls_plan = load_data_robust(FILE_SUPPLY_PLAN, up_p)
-            if xls_plan: st.success("✅ 중기 계획 연결됨")
-            else: st.warning("⚠️ 중기 계획 파일 필요")
+            xls_plan = load_data_robust(FILE_SUPPLY_PLAN)
+            up_p = None
+            if xls_plan is None:
+                st.warning("⚠️ 중기 계획(사업계획) 없음")
+                up_p = st.file_uploader("사업계획(.xlsx) 업로드", type="xlsx")
+                if up_p: xls_plan = load_data_robust(FILE_SUPPLY_PLAN, up_p)
+            else: st.success("✅ 중기 계획 데이터 연결됨")
             
             # 데이터 병합
             try:
@@ -384,14 +390,8 @@ def main():
 
     # ── 메인 화면 ──
     if df_final.empty:
-        st.info("👈 좌측 사이드바에서 데이터를 업로드해주세요.")
+        st.info("👈 좌측 사이드바에서 데이터를 연결해주세요.")
         return
-
-    # 기온 데이터
-    df_temp = load_data_robust(FILE_TEMP, up_t)
-    if isinstance(df_temp, pd.DataFrame) is False and df_temp is not None:
-         # 엑셀 객체로 들어왔으면 변환
-         df_temp = df_temp.parse(0)
 
     if main_cat == "1. 판매량 예측":
         if "실적분석" in sub_mode:
