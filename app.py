@@ -11,7 +11,7 @@ from sklearn.linear_model import LinearRegression
 from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────
-# 🟢 1. 기본 설정
+# 🟢 1. 기본 설정 & 폰트
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="도시가스 계획/실적 분석", layout="wide")
 
@@ -24,7 +24,7 @@ def set_korean_font():
 
 set_korean_font()
 
-# 🟢 설정 정보
+# 🟢 깃허브 설정 (한글 파일명 포함)
 GITHUB_USER = "HanYeop"
 REPO_NAME = "GasProject"
 BRANCH = "main" 
@@ -47,13 +47,15 @@ USE_COL_TO_GROUP = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 데이터 로드 (3중 안전장치)
+# 🟢 2. 데이터 로드 (가장 강력한 방식)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data_robust(filename):
-    """1. 깃허브 -> 2. 로컬 -> 3. 실패(None) 순서로 시도"""
-    # 1. GitHub 시도
-    url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{quote(filename)}"
+    """1. 깃허브 URL 시도 -> 2. 로컬 파일 시도 -> 3. 실패(None)"""
+    # 1. GitHub (URL 인코딩 필수)
+    encoded_name = quote(filename)
+    url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{encoded_name}"
+    
     try:
         response = requests.get(url)
         if response.status_code == 200:
@@ -64,7 +66,7 @@ def load_data_robust(filename):
                 except: return pd.read_csv(io.BytesIO(response.content), encoding='cp949')
     except: pass
 
-    # 2. 로컬 파일 시도 (형님 컴퓨터에 파일이 있다면 여기서 읽힘)
+    # 2. Local File (형님 컴퓨터에서 테스트할 때)
     if Path(filename).exists():
         if filename.endswith('.xlsx'):
             return pd.ExcelFile(filename, engine='openpyxl')
@@ -82,6 +84,7 @@ def _clean_base(df):
     return out
 
 def make_long_sales(plan_df, actual_df):
+    """판매량 변환"""
     plan_df = _clean_base(plan_df)
     actual_df = _clean_base(actual_df)
     records = []
@@ -91,6 +94,7 @@ def make_long_sales(plan_df, actual_df):
             if clean_col in ["연", "월"]: continue
             group = USE_COL_TO_GROUP.get(clean_col)
             if not group: continue
+            
             base = df[["연", "월"]].copy()
             base["그룹"] = group
             base["용도"] = clean_col
@@ -101,34 +105,27 @@ def make_long_sales(plan_df, actual_df):
     return pd.concat(records, ignore_index=True).dropna(subset=["연", "월"])
 
 def make_long_supply(df):
+    """공급량 변환 (사업계획 데이터)"""
     df = _clean_base(df)
     records = []
     for col in df.columns:
         clean_col = col.strip()
+        if clean_col in ["연", "월", "소계", "합계"]: continue
         group = USE_COL_TO_GROUP.get(clean_col)
         if not group: continue
+        
         base = df[["연", "월"]].copy()
         base["그룹"] = group
         base["용도"] = clean_col
-        base["구분"] = "확정계획" # 공급량 분석에서는 실적처럼 사용
+        base["구분"] = "확정계획" # 실적처럼 사용
         base["값"] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         records.append(base)
     if not records: return pd.DataFrame()
     return pd.concat(records, ignore_index=True).dropna(subset=["연", "월"])
 
-def preprocess_temp(df):
-    if df is None: return None
-    if '날짜' not in df.columns: df.rename(columns={df.columns[0]: '날짜'}, inplace=True)
-    df['날짜'] = pd.to_datetime(df['날짜'])
-    df['연'] = df['날짜'].dt.year
-    df['월'] = df['날짜'].dt.month
-    temp_col = [c for c in df.columns if "기온" in c][0]
-    monthly = df.groupby(['연', '월'])[temp_col].mean().reset_index()
-    monthly.rename(columns={temp_col: '평균기온'}, inplace=True)
-    return monthly
-
 def load_temp_universal(uploaded_file):
-    if uploaded_file: # 업로드 우선
+    # 1. 업로드 우선
+    if uploaded_file:
         try:
             if uploaded_file.name.endswith('.csv'):
                 try: df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
@@ -136,20 +133,38 @@ def load_temp_universal(uploaded_file):
             else: df = pd.read_excel(uploaded_file, engine='openpyxl')
             return preprocess_temp(df)
         except: return None
-    # 깃허브/로컬 시도
+    # 2. 깃허브 로드
     raw = load_data_robust(TEMP_FILE)
-    if isinstance(raw, pd.DataFrame): return preprocess_temp(raw) # CSV Loaded as DF
+    if isinstance(raw, pd.DataFrame): return preprocess_temp(raw)
     return None
 
+def preprocess_temp(df):
+    if df is None: return None
+    if '날짜' not in df.columns: df.rename(columns={df.columns[0]: '날짜'}, inplace=True)
+    df['날짜'] = pd.to_datetime(df['날짜'])
+    df['연'] = df['날짜'].dt.year
+    df['월'] = df['날짜'].dt.month
+    
+    cols = [c for c in df.columns if "기온" in c]
+    if not cols: return None
+    target = cols[0]
+    
+    monthly = df.groupby(['연', '월'])[target].mean().reset_index()
+    monthly.rename(columns={target: '평균기온'}, inplace=True)
+    return monthly
+
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 분석 함수들 (공급량 2026~2028 반영)
+# 🟢 3. 분석 함수들 (공통 사용)
 # ─────────────────────────────────────────────────────────
 def render_common_dashboard(long_df, unit_label, title_prefix=""):
     st.subheader(f"📊 {title_prefix} 분석 ({unit_label})")
+    
+    # 🔴 필터링된 데이터가 들어옴
     if long_df.empty: st.warning("데이터가 없습니다."); return
     
     all_years = sorted(long_df['연'].unique())
-    selected_years = st.multiselect("연도 선택", all_years, default=all_years, key=f"viz_{title_prefix}", label_visibility="collapsed")
+    # 그래프용 연도 선택
+    selected_years = st.multiselect("그래프 표시 연도", all_years, default=all_years, key=f"viz_{title_prefix}", label_visibility="collapsed")
     if not selected_years: return
 
     df_filtered = long_df[long_df['연'].isin(selected_years)]
@@ -167,13 +182,14 @@ def render_common_dashboard(long_df, unit_label, title_prefix=""):
         fig2 = px.bar(df_yr, x='연', y='값', color='그룹', text_auto='.2s')
         st.plotly_chart(fig2, use_container_width=True)
     
-    st.dataframe(df_yr.pivot(index='연', columns='그룹', values='값').fillna(0).style.format("{:,.0f}"), use_container_width=True)
+    st.dataframe(df_mon.pivot(index='월', columns='연', values='값').style.format("{:,.0f}"), use_container_width=True)
 
 def render_prediction(long_df, unit_label, start_pred_year):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
+    # 학습 데이터
     train_years = sorted(long_df['연'].unique())
-    st.info(f"ℹ️ **학습 데이터:** {train_years[0]}~{train_years[-1]}년 (선택된 연도만 사용)")
+    st.info(f"ℹ️ **학습 사용 데이터:** {train_years[0]}년 ~ {train_years[-1]}년 (선택된 연도만 반영)")
     
     method = st.radio("예측 모델", ["1. 선형 회귀", "2. 2차 곡선", "3. 로그 추세", "4. 지수 평활", "5. CAGR"], horizontal=True)
 
@@ -213,7 +229,10 @@ def render_prediction(long_df, unit_label, start_pred_year):
     st.markdown("#### 📈 장기 전망")
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
     st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(df_res[df_res['구분']=='예측'].pivot_table(index='연', columns='그룹', values='값').style.format("{:,.0f}"), use_container_width=True)
+    
+    st.markdown("#### 🧱 상세 예측")
+    df_f = df_res[df_res['구분']=='예측']
+    st.dataframe(df_f.pivot_table(index='연', columns='그룹', values='값').style.format("{:,.0f}"), use_container_width=True)
 
 def render_household(long_df, df_temp, unit_label):
     st.subheader(f"🏠 가정용 정밀 분석")
@@ -262,23 +281,27 @@ def main():
         st.markdown("---")
         
         # 파일 상태 표시 & 업로더 (실패 시에만)
+        st.caption("데이터 파일 상태")
         if is_sales_ok: st.success("✅ 판매량 로드됨")
         else: 
-            st.error("❌ 판매량 실패")
+            st.error("❌ 판매량 실패 -> 파일 업로드 필요")
             up_s = st.file_uploader("판매량(.xlsx)", type="xlsx", key="us")
             if up_s: xls_sales = pd.ExcelFile(up_s, engine='openpyxl'); is_sales_ok = True
             
-        if is_plan_ok: st.success("✅ 사업계획(공급량) 로드됨")
+        if is_plan_ok: st.success("✅ 사업계획 로드됨")
         else:
-            st.warning("⚠️ 사업계획 실패")
+            st.warning("⚠️ 사업계획 실패 -> 파일 업로드 필요")
             up_p = st.file_uploader("사업계획(.xlsx)", type="xlsx", key="up")
             if up_p: xls_plan = pd.ExcelFile(up_p, engine='openpyxl'); is_plan_ok = True
             
         up_t = st.file_uploader("기온(.csv, .xlsx)", type=["csv", "xlsx"])
 
-        # 🟢 [학습 기간 선택] - 데이터가 로드되면 즉시 표시
+        # 🟢 [학습 기간 선택] - 데이터 로드 후 즉시 표시
         st.markdown("---")
         st.markdown("**📅 학습/분석 대상 연도 설정**")
+        st.caption("체크된 연도만 분석 및 학습에 사용됩니다.")
+        
+        target_years = []
         
         # A. 판매량 데이터 준비
         if is_sales_ok:
@@ -299,6 +322,7 @@ def main():
         # 현재 카테고리에 맞는 연도 필터 제공
         if main_cat == "1. 판매량 예측":
             if not df_sales_long.empty:
+                # 판매량은 2025년 이하만 실적
                 avail_years = sorted([y for y in df_sales_long['연'].unique() if y <= 2025])
                 train_years = st.multiselect("연도(판매량)", avail_years, default=avail_years, label_visibility="collapsed")
                 if train_years:
