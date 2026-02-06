@@ -146,14 +146,14 @@ def render_analysis_dashboard(long_df, unit_label):
         st.markdown(f"#### 📈 월별 추이")
         mon_grp = df_filtered.groupby(['연', '월'])['값'].sum().reset_index()
         fig1 = px.line(mon_grp, x='월', y='값', color='연', markers=True)
-        # 🔴 [수정] 정수 연도 표시
+        # 정수 연도 표시
         fig1.update_xaxes(dtick=1, tickformat="d")
         st.plotly_chart(fig1, use_container_width=True)
     with col2:
         st.markdown(f"#### 🧱 용도별 구성비")
         yr_grp = df_filtered.groupby(['연', '그룹'])['값'].sum().reset_index()
         fig2 = px.bar(yr_grp, x='연', y='값', color='그룹', text_auto='.2s')
-        # 🔴 [수정] 정수 연도 표시
+        # 정수 연도 표시
         fig2.update_xaxes(dtick=1, tickformat="d")
         st.plotly_chart(fig2, use_container_width=True)
     
@@ -161,7 +161,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 4. 예측 화면 (중복 해결 + 정수 연도)
+# 🟢 4. 예측 화면 (설명 추가 + 공백 채우기)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
@@ -181,9 +181,22 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         "1. 선형 회귀 (Linear)", "2. 2차 곡선 (Quadratic)", "3. 3차 곡선 (Cubic)",
         "4. 로그 추세 (Log)", "5. 지수 평활 (Holt)", "6. CAGR (성장률)"
     ], horizontal=True)
+
+    # 🔴 [추가] 알고리즘 설명 박스
+    if "선형" in pred_method:
+        st.info("ℹ️ **선형 회귀 (Linear):** 매년 일정량씩 꾸준히 증가하거나 감소하는 가장 기본적인 직선 추세입니다.")
+    elif "2차" in pred_method:
+        st.info("ℹ️ **2차 곡선 (Quadratic):** 성장이 가속화되거나, 정점을 찍고 내려오는 등 곡선 형태의 패턴을 반영합니다.")
+    elif "3차" in pred_method:
+        st.info("ℹ️ **3차 곡선 (Cubic):** 상승과 하락이 반복되는 더 복잡한 S자형 패턴이나 변곡점을 반영할 수 있습니다.")
+    elif "로그" in pred_method:
+        st.info("ℹ️ **로그 추세 (Logarithmic):** 초반에는 급격히 성장하다가 점차 완만해지는(성숙기 진입) 패턴에 적합합니다.")
+    elif "지수" in pred_method:
+        st.info("ℹ️ **지수 평활 (Exponential):** 가장 최근의 데이터에 더 큰 가중치를 두어, 최신 트렌드를 민감하게 반영합니다.")
+    elif "CAGR" in pred_method:
+        st.info("ℹ️ **CAGR (연평균 성장률):** 과거의 평균적인 성장 비율(%)이 미래에도 그대로 유지된다고 가정합니다.")
     
     # 3. 예측 수행
-    # 그룹별로 루프를 돌면서 [실적] + [확정계획] + [AI예측]을 하나로 잇습니다.
     df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index() # 전체 데이터
     
     # 학습용 데이터 그룹핑
@@ -194,13 +207,11 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     results = []
     
     for grp in groups:
-        # A. 학습용 데이터 추출 (모델 학습용)
+        # A. 학습용 데이터 추출
         sub_train = df_train_grp[df_train_grp['그룹'] == grp]
-        
-        # B. 전체 데이터 추출 (2026~2028 확정계획 가져오기용)
+        # B. 전체 데이터 추출 (확정계획 가져오기용)
         sub_full = df_grp[df_grp['그룹'] == grp]
         
-        # 학습 데이터가 너무 적으면 스킵
         if len(sub_train) < 2: continue
         
         X = sub_train['연'].values.reshape(-1, 1)
@@ -229,26 +240,25 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             
         pred = [max(0, p) for p in pred]
         
-        # 🔴 [결과 저장] - 여기서 중복 방지 로직 적용!
+        # 🔴 [결과 저장]
         
-        # A. 과거 실적 (선택된 연도만)
-        # 중요: 공급량 모드(2029년 시작)일 경우, 2026~2028은 '실적'으로 넣지 말고 아래 '확정계획'으로 넣어야 함.
-        # 따라서 여기서 2026 미만만 가져옵니다.
+        # 1. 과거 실적 (선택된 연도만)
         hist_mask = sub_full['연'].isin(train_years_selected)
         if start_pred_year == 2029:
+            # 공급량 모드면 26년 미만까지만 실적 취급 (26~28은 확정계획)
             hist_mask = hist_mask & (sub_full['연'] < 2026)
             
         hist_data = sub_full[hist_mask]
         for _, row in hist_data.iterrows():
             results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '실적'})
             
-        # B. 확정 계획 (2026~2028년, 공급량 모드일 때 강제 삽입)
+        # 2. 확정 계획 (2026~2028년, 공급량 모드일 때 강제 삽입)
         if start_pred_year == 2029:
             plan_data = sub_full[sub_full['연'].between(2026, 2028)]
             for _, row in plan_data.iterrows():
                 results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '확정계획(26~28)'})
         
-        # C. AI 미래 예측 (2029~2035)
+        # 3. AI 미래 예측 (2029~2035)
         for yr, v in zip(future_years.flatten(), pred): 
             results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
         
@@ -262,14 +272,14 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     if start_pred_year == 2029:
         fig.add_vrect(x0=2025.5, x1=2028.5, fillcolor="yellow", opacity=0.1, annotation_text="확정계획")
     
-    # 🔴 [수정] 정수 연도 표시
+    # 정수 연도 표시
     fig.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
     st.markdown("#### 🧱 연도별 공급량 구성 (누적 스택)")
     fig_stack = px.bar(df_res, x='연', y='값', color='그룹', title="연도별 용도 구성비", text_auto='.2s')
-    # 🔴 [수정] 정수 연도 표시
+    # 정수 연도 표시
     fig_stack.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig_stack, use_container_width=True)
     
