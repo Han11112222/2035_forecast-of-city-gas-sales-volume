@@ -27,28 +27,16 @@ set_korean_font()
 
 # 🟢 [매핑] 컬럼명 -> 표준 그룹
 USE_COL_TO_GROUP = {
-    # 🏠 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
     "개별난방": "가정용", "중앙난방": "가정용", "가정용소계": "가정용",
-    
-    # 🏪 영업용
     "일반용": "영업용", "일반용(1)": "영업용", "일반용(2)": "영업용", 
     "영업용_일반용1": "영업용", "영업용_일반용2": "영업용", 
     "일반용1(영업)": "영업용", "일반용2(영업)": "영업용", "일반용1": "영업용",
-    
-    # 🏢 업무용
     "업무난방용": "업무용", "냉방용": "업무용", "냉난방용": "업무용", "주한미군": "업무용",
     "업무용_일반용1": "업무용", "업무용_일반용2": "업무용", "업무용_업무난방": "업무용", 
     "업무용_냉난방": "업무용", "업무용_주한미군": "업무용", 
     "일반용1(업무)": "업무용", "일반용2(업무)": "업무용",
-    
-    # 🏭 산업용
-    "산업용": "산업용",
-    
-    # 🚌 수송용
-    "수송용(CNG)": "수송용", "수송용(BIO)": "수송용", "CNG": "수송용", "BIO": "수송용",
-    
-    # ⚡ 발전/기타
+    "산업용": "산업용", "수송용(CNG)": "수송용", "수송용(BIO)": "수송용", "CNG": "수송용", "BIO": "수송용",
     "열병합용": "열병합", "열병합용1": "열병합", "열병합용2": "열병합",
     "연료전지용": "연료전지", "연료전지": "연료전지",
     "열전용설비용": "열전용설비용", "열전용설비용(주택외)": "열전용설비용"
@@ -151,32 +139,25 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 4. 예측 화면 (AI 해설 + 그래프 라벨 정렬)
+# 🟢 4. 예측 화면 (문구 수정 및 위치 조정)
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
-    """과거 데이터의 변동과 미래 예측을 종합하여 텍스트 생성"""
     if hist_df.empty or pred_df.empty: return ""
-    
-    # 연도별 합계 계산
     hist_yearly = hist_df.groupby('연')['값'].sum().sort_index()
     pred_yearly = pred_df.groupby('연')['값'].sum().sort_index()
     
-    # 1. 과거 데이터 분석 (최대 상승/하락 연도 찾기)
     diffs = hist_yearly.diff()
     max_up_year = diffs.idxmax() if not diffs.dropna().empty else None
     max_down_year = diffs.idxmin() if not diffs.dropna().empty else None
     
-    # 2. 미래 예측 경향 (CAGR)
     start_val = pred_yearly.iloc[0]
     end_val = pred_yearly.iloc[-1]
     years = len(pred_yearly)
     if start_val > 0:
         cagr = (end_val / start_val) ** (1 / years) - 1
         trend_str = "지속적인 증가세" if cagr > 0.01 else "감소세" if cagr < -0.01 else "보합세"
-    else:
-        trend_str = "변동"
+    else: trend_str = "변동"
 
-    # 3. 문구 생성
     insight = f"💡 **[AI 분석]** 과거 데이터를 분석한 결과, **{int(max_up_year)}년의 상승**과 **{int(max_down_year)}년의 하락/조정**을 종합하여 볼 때, 향후 2035년까지는 **{trend_str}**가 유지될 것으로 전망됩니다."
     return insight
 
@@ -190,14 +171,12 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     
     if df_train.empty: st.warning("학습 데이터가 부족합니다."); return
     
-    # 알고리즘 선택
     st.markdown("##### 📊 추세 분석 모델 선택")
     pred_method = st.radio("방법", [
         "1. 선형 회귀 (Linear)", "2. 2차 곡선 (Quadratic)", "3. 3차 곡선 (Cubic)",
         "4. 로그 추세 (Log)", "5. 지수 평활 (Holt)", "6. CAGR (성장률)"
     ], horizontal=True)
 
-    # 모델 설명 박스
     desc = ""
     if "선형" in pred_method: desc = "선형 회귀: 매년 일정량씩 꾸준히 변하는 직선 추세"
     elif "2차" in pred_method: desc = "2차 곡선: 성장이 가속화되거나 정점을 찍고 내려오는 곡선 추세"
@@ -207,14 +186,12 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     elif "CAGR" in pred_method: desc = "CAGR: 과거의 연평균 성장률이 미래에도 유지된다고 가정"
     st.info(f"ℹ️ **{desc}**")
 
-    # 예측 수행
     df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index()
     df_train_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
     groups = df_grp['그룹'].unique()
     future_years = np.arange(start_pred_year, 2036).reshape(-1, 1)
     results = []
     
-    # Insight 생성을 위한 임시 데이터
     total_hist_vals = []
     total_pred_vals = []
 
@@ -228,12 +205,9 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         pred = []
         
         try:
-            if "선형" in pred_method:
-                model = LinearRegression(); model.fit(X, y); pred = model.predict(future_years)
-            elif "2차" in pred_method:
-                model = make_pipeline(PolynomialFeatures(2), LinearRegression()); model.fit(X, y); pred = model.predict(future_years)
-            elif "3차" in pred_method:
-                model = make_pipeline(PolynomialFeatures(3), LinearRegression()); model.fit(X, y); pred = model.predict(future_years)
+            if "선형" in pred_method: model = LinearRegression(); model.fit(X, y); pred = model.predict(future_years)
+            elif "2차" in pred_method: model = make_pipeline(PolynomialFeatures(2), LinearRegression()); model.fit(X, y); pred = model.predict(future_years)
+            elif "3차" in pred_method: model = make_pipeline(PolynomialFeatures(3), LinearRegression()); model.fit(X, y); pred = model.predict(future_years)
             elif "로그" in pred_method:
                 X_idx = np.arange(1, len(X) + 1).reshape(-1, 1)
                 X_fut = np.arange(len(X) + 1, len(X) + 1 + len(future_years)).reshape(-1, 1)
@@ -249,29 +223,25 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             
         pred = [max(0, p) for p in pred]
         
-        # 데이터 병합 (중복 방지)
-        # 1. 과거 실적
+        # 데이터 병합
         hist_mask = sub_full['연'].isin(train_years_selected)
         if start_pred_year == 2029: hist_mask = hist_mask & (sub_full['연'] < 2026)
         hist_data = sub_full[hist_mask]
         for _, row in hist_data.iterrows():
             results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '실적'})
-            total_hist_vals.append({'연': row['연'], '값': row['값']}) # Insight용
+            total_hist_vals.append({'연': row['연'], '값': row['값']})
             
-        # 2. 확정 계획 (공급량 모드)
         if start_pred_year == 2029:
             plan_data = sub_full[sub_full['연'].between(2026, 2028)]
             for _, row in plan_data.iterrows():
                 results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '확정계획(26~28)'})
                 
-        # 3. AI 미래 예측
         for yr, v in zip(future_years.flatten(), pred): 
             results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
-            total_pred_vals.append({'연': yr, '값': v}) # Insight용
+            total_pred_vals.append({'연': yr, '값': v})
         
     df_res = pd.DataFrame(results)
     
-    # 🔴 [자동 분석 문구 출력]
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
     if insight_text: st.success(insight_text)
     
@@ -280,13 +250,31 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
     
-    # 🔴 [라벨 정렬 수정] 중앙 배치
-    fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green", 
-                  annotation_text="AI 예측 시작", annotation_position="top") # top은 라인의 최상단 중앙
+    # 🔴 [수정] 텍스트 변경 및 위치 정중앙 배치
     
+    # 1. 예측 구분선 (초록 점선)
+    fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green")
+    
+    # 2. '예측 값' 문구 배치 (2029 ~ 2035 구간 중앙)
+    fig.add_vrect(
+        x0=start_pred_year-0.5, 
+        x1=2035.5, 
+        fillcolor="green", 
+        opacity=0.05, 
+        annotation_text="예측 값", 
+        annotation_position="inside top"
+    )
+    
+    # 3. '확정계획' 문구 배치 (2026 ~ 2028 구간 중앙)
     if start_pred_year == 2029:
-        fig.add_vrect(x0=2025.5, x1=2028.5, fillcolor="yellow", opacity=0.1, 
-                      annotation_text="확정계획", annotation_position="inside top") # 영역 내부 상단 중앙
+        fig.add_vrect(
+            x0=2025.5, 
+            x1=2028.5, 
+            fillcolor="yellow", 
+            opacity=0.1, 
+            annotation_text="확정계획", 
+            annotation_position="inside top"
+        )
     
     fig.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig, use_container_width=True)
