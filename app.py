@@ -9,7 +9,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 
 # ─────────────────────────────────────────────────────────
-# 🟢 1. 기본 설정
+# 🟢 1. 기본 설정 & 폰트
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="도시가스 통합 분석", layout="wide")
 
@@ -26,7 +26,7 @@ set_korean_font()
 # 🟢 2. 용도별 매핑 (판매량 vs 공급량 분리)
 # ─────────────────────────────────────────────────────────
 
-# 1) 판매량용 매핑 (기존 유지 - 포괄적)
+# 1) 판매량용 매핑 (기존 유지)
 MAPPING_SALES = {
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
     "개별난방": "가정용", "중앙난방": "가정용", "가정용소계": "가정용",
@@ -37,20 +37,24 @@ MAPPING_SALES = {
     "열전용설비용": "열전용설비용"
 }
 
-# 2) 공급량용 매핑 (형님 요청사항 반영 - 엄격)
+# 2) 공급량용 매핑 (형님 요청사항 - 엄격 적용)
 MAPPING_SUPPLY = {
-    # 가정용
+    # 🏠 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", 
     "개별난방": "가정용", "중앙난방": "가정용",
-    # 영업용
+    
+    # 🏪 영업용 (일반용1)
     "일반용(1)": "영업용", "일반용1": "영업용", "일반용1(영업)": "영업용",
-    # 업무용
+    
+    # 🏢 업무용 (일반용2 + 냉난방 + 미군)
     "일반용(2)": "업무용", "일반용2": "업무용", "일반용1(업무)": "업무용",
     "업무난방용": "업무용", "냉난방용": "업무용", "냉방용": "업무용", "주한미군": "업무용",
-    # 수송용
+    
+    # 🚌 수송용
     "수송용(CNG)": "수송용", "CNG": "수송용",
     "수송용(BIO)": "수송용", "BIO": "수송용",
-    # 기타
+    
+    # 🏭 기타
     "산업용": "산업용",
     "열병합용": "열병합", "연료전지용": "연료전지", "열전용설비용": "열전용설비용"
 }
@@ -59,27 +63,23 @@ MAPPING_SUPPLY = {
 # 🟢 3. 파일 로딩 및 전처리
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
-def load_files_smart(uploaded_files):
-    if not uploaded_files: return {}
-    data_dict = {}
-    if not isinstance(uploaded_files, list): uploaded_files = [uploaded_files]
-    for file in uploaded_files:
+def load_file_robust(uploaded_file):
+    if uploaded_file is None: return None
+    try:
+        excel = pd.ExcelFile(uploaded_file, engine='openpyxl')
+        sheets = {name: excel.parse(name) for name in excel.sheet_names}
+        return sheets
+    except:
         try:
-            excel = pd.ExcelFile(file, engine='openpyxl')
-            for sheet in excel.sheet_names:
-                data_dict[f"{file.name}_{sheet}"] = excel.parse(sheet)
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+            return {"default": df}
         except:
-            file.seek(0)
             try:
-                df = pd.read_csv(file, encoding='utf-8-sig')
-                data_dict[f"{file.name}"] = df
-            except:
-                file.seek(0)
-                try:
-                    df = pd.read_csv(file, encoding='cp949')
-                    data_dict[f"{file.name}"] = df
-                except: pass
-    return data_dict
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='cp949')
+                return {"default": df}
+            except: return None
 
 def clean_df(df):
     if df is None: return pd.DataFrame()
@@ -93,6 +93,7 @@ def clean_df(df):
     return df
 
 def make_long_data(df, label, mapping_dict):
+    """지정된 매핑 딕셔너리 사용"""
     df = clean_df(df)
     if df.empty or '연' not in df.columns or '월' not in df.columns: return pd.DataFrame()
     
@@ -102,7 +103,7 @@ def make_long_data(df, label, mapping_dict):
     df = df.dropna(subset=['연', '월'])
     
     for col in df.columns:
-        group = mapping_dict.get(col) 
+        group = mapping_dict.get(col)
         if not group: continue
         sub = df[['연', '월']].copy()
         sub['그룹'] = group
@@ -114,22 +115,22 @@ def make_long_data(df, label, mapping_dict):
     if not records: return pd.DataFrame()
     return pd.concat(records, ignore_index=True)
 
-def find_target_df(data_dict, type_keywords, unit_keyword=None):
+def find_sheet(data_dict, keywords, unit_keyword=None):
     if not data_dict: return None
     if unit_keyword:
-        for key, df in data_dict.items():
-            clean_key = key.replace(" ", "")
-            if any(k in clean_key for k in type_keywords) and (unit_keyword in clean_key):
+        for name, df in data_dict.items():
+            clean = name.replace(" ", "")
+            if any(k in clean for k in keywords) and (unit_keyword in clean):
                 return df
-    for key, df in data_dict.items():
-        clean_key = key.replace(" ", "")
-        if any(k in clean_key for k in type_keywords):
+    for name, df in data_dict.items():
+        clean = name.replace(" ", "")
+        if any(k in clean for k in keywords):
             return df
     if len(data_dict) == 1: return list(data_dict.values())[0]
     return None
 
 # ─────────────────────────────────────────────────────────
-# 🟢 4. 분석 화면 (공통) - 소계 추가
+# 🟢 4. 분석 화면 (소계 추가)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
@@ -163,11 +164,11 @@ def render_analysis_dashboard(long_df, unit_label):
     
     st.markdown("##### 📋 상세 수치")
     piv = df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-    piv['소계'] = piv.sum(axis=1) # 소계 추가
+    piv['소계'] = piv.sum(axis=1)
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면
+# 🟢 5. 예측 화면 (판매량 26년 예측 / 공급량 29년 예측)
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -192,7 +193,9 @@ def generate_trend_insight(hist_df, pred_df):
 def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected, is_supply_mode=False):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
-    # 학습 데이터 필터링
+    # 🔴 학습 데이터 필터링 (중요)
+    # 공급량: 선택된 연도 + 확정계획(26~28)
+    # 판매량: 선택된 연도만 (확정계획 없음)
     filter_cond = long_df['연'].isin(train_years_selected)
     if is_supply_mode:
         filter_cond = filter_cond | (long_df['구분'] == '확정계획')
@@ -219,6 +222,10 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index()
     df_train_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
     groups = df_grp['그룹'].unique()
+    
+    # 🔴 미래 예측 연도 설정
+    # 판매량: 2026 ~ 2035 (2026년부터 바로 예측)
+    # 공급량: 2029 ~ 2035 (2026~2028은 확정계획 사용)
     future_years = np.arange(start_pred_year, 2036).reshape(-1, 1)
     results = []
     
@@ -257,29 +264,31 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         # 🔴 [데이터 병합 로직]
         added_years = set()
         
-        # 1. 과거 실적
+        # 1. 과거 실적 (선택된 연도만)
         hist_mask = sub_full['연'].isin(train_years_selected)
-        # 공급량 모드는 2026미만만 실적 취급
+        
+        # 공급량 모드(2029 시작) -> 26년 미만만 실적 취급
         if is_supply_mode and start_pred_year == 2029:
              hist_mask = hist_mask & (sub_full['연'] < 2026)
-        # 판매량 모드는 start_pred_year(2026) 미만만 실적 취급
+        # 판매량 모드(2026 시작) -> 26년 미만만 실적 취급
         elif not is_supply_mode:
              hist_mask = hist_mask & (sub_full['연'] < start_pred_year)
         
         hist_data = sub_full[hist_mask]
+        
         for _, row in hist_data.iterrows():
             if row['연'] not in added_years:
                 results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '실적'})
                 total_hist_vals.append({'연': row['연'], '값': row['값']})
                 added_years.add(row['연'])
             
-        # 2. 확정 계획 (공급량 전용)
+        # 2. 확정 계획 (공급량 전용, 26~28)
         if is_supply_mode and start_pred_year == 2029:
             plan_data = sub_full[sub_full['연'].between(2026, 2028)]
             for _, row in plan_data.iterrows():
                 results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '확정계획'})
                 
-        # 3. AI 미래 예측
+        # 3. AI 미래 예측 (판매량: 26년부터 / 공급량: 29년부터)
         for yr, v in zip(future_years.flatten(), pred): 
             results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
             total_pred_vals.append({'연': yr, '값': v})
@@ -289,24 +298,15 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
     if insight_text: st.success(insight_text)
     
-    # 시각화
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
     
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green")
-    fig.add_vrect(
-        x0=start_pred_year-0.5, x1=2035.5, 
-        fillcolor="green", opacity=0.05, 
-        annotation_text="예측 값", annotation_position="inside top"
-    )
+    fig.add_vrect(x0=start_pred_year-0.5, x1=2035.5, fillcolor="green", opacity=0.05, annotation_text="예측 값", annotation_position="inside top")
     
     if is_supply_mode and start_pred_year == 2029:
-        fig.add_vrect(
-            x0=2025.5, x1=2028.5, 
-            fillcolor="yellow", opacity=0.1, 
-            annotation_text="확정계획", annotation_position="inside top"
-        )
+        fig.add_vrect(x0=2025.5, x1=2028.5, fillcolor="yellow", opacity=0.1, annotation_text="확정계획", annotation_position="inside top")
     
     fig.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig, use_container_width=True)
@@ -319,18 +319,18 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     
     with st.expander("📋 연도별 상세 데이터 확인"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-        piv['소계'] = piv.sum(axis=1) # 소계 추가
+        piv['소계'] = piv.sum(axis=1)
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 6. 기온 분석 (복구됨)
+# 🟢 6. 기온 분석 (복구)
 # ─────────────────────────────────────────────────────────
 def render_household_analysis(long_df, temp_file):
     st.subheader(f"🏠 가정용 정밀 분석 (기온 영향)")
     if temp_file is None:
         st.warning("⚠️ 기온 데이터 파일(.csv)을 업로드해주세요."); return
         
-    temp_dict = load_files_smart(temp_file)
+    temp_dict = load_file_robust(temp_file)
     if not temp_dict: return
     
     df_temp = list(temp_dict.values())[0]
@@ -416,31 +416,31 @@ def main():
     start_year = 2026
     is_supply = False
     
-    # 🟢 모드별 로직
-    if mode.startswith("1"): # 판매량
+    # 🟢 [모드 1] 판매량: 2026년부터 예측
+    if mode.startswith("1"):
         start_year = 2026
         if up_file:
-            data = load_files_smart(up_file)
+            data = load_file_robust(up_file)
             if data:
-                # 단위 필터 + 실적만 로드 (계획 무시)
-                df_a = find_target_df(data, ["실적"], unit_key)
+                df_a = find_sheet(data, ["실적"], unit_key)
                 if df_a is None and len(data) == 1: df_a = list(data.values())[0]
                 
                 if df_a is not None:
                     long_a = make_long_data(df_a, "실적", MAPPING_SALES)
-                    # 2025년 이하만 남김
+                    # 2025년 이하만 사용 (과거 실적)
                     long_a = long_a[long_a['연'] <= 2025] 
                     df_final = pd.concat([long_a], ignore_index=True)
         else: st.info("👈 [판매량 파일]을 업로드하세요."); return
 
-    elif mode.startswith("2"): # 공급량
+    # 🟢 [모드 2] 공급량: 2029년부터 예측 (26~28 확정)
+    elif mode.startswith("2"):
         start_year = 2029 
         is_supply = True
         if up_file:
-            data = load_files_smart([up_file])
+            data = load_file_robust(up_file)
             if data:
-                df_hist = find_target_df(data, ["공급량_실적", "실적"], None)
-                df_plan = find_target_df(data, ["공급량_계획", "계획"], None)
+                df_hist = find_sheet(data, ["공급량_실적", "실적"])
+                df_plan = find_sheet(data, ["공급량_계획", "계획"])
                 if df_hist is None and df_plan is None and len(data) == 1: df_hist = list(data.values())[0]
                 
                 long_h = make_long_data(df_hist, "실적", MAPPING_SUPPLY)
@@ -448,12 +448,12 @@ def main():
                 df_final = pd.concat([long_h, long_p], ignore_index=True)
         else: st.info("👈 [공급량 파일]을 업로드하세요."); return
 
-    elif mode.startswith("3"): # 최종값
+    # 🟢 [모드 3] 최종값 확인
+    elif mode.startswith("3"):
         if up_file:
-            data = load_files_smart([up_file])
+            data = load_file_robust(up_file)
             if data:
                 df_raw = list(data.values())[0]
-                # 최종값은 보통 공급량 양식 따름
                 df_final = make_long_data(df_raw, "최종값", MAPPING_SUPPLY)
         else: st.info("👈 [최종값 파일]을 업로드하세요."); return
 
