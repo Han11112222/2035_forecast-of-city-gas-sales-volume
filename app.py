@@ -10,7 +10,7 @@ from urllib.parse import quote
 from sklearn.linear_model import LinearRegression
 
 # ─────────────────────────────────────────────────────────
-# 🟢 1. 기본 설정 & 폰트
+# 🟢 1. 기본 설정
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="도시가스 통합 분석 시스템", layout="wide")
 
@@ -33,7 +33,7 @@ FILE_SALES = "판매량(계획_실적).xlsx"
 FILE_SUPPLY_MJ = "공급량실적_계획_실적_MJ.xlsx" # 공급량 통합 파일
 FILE_TEMP = "기온.csv"
 
-# 🟢 [매핑 테이블] 형님 파일의 모든 컬럼명 대응
+# 🟢 [매핑 테이블] 모든 파일의 컬럼명을 표준 그룹으로 통합
 USE_COL_TO_GROUP = {
     # 🏠 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
@@ -259,85 +259,85 @@ def main():
         
     df_final = pd.DataFrame()
     
-    # 🟢 1. 판매량 예측 모드
+    # 🟢 1. 판매량 예측 모드 (파일 1개 필요)
     if mode.startswith("1"):
         with st.sidebar:
             st.warning("📂 **[판매량(계획_실적).xlsx]** 파일 업로드")
             up = st.file_uploader("판매량 파일", type=["xlsx", "csv"], key="sales_up")
             
         raw = load_data_super_robust(FILE_SALES, up)
+        
         if raw is not None:
             try:
-                # 판매량은 '계획', '실적' 시트가 있거나 파일명에 포함됨
+                # 엑셀 파일인 경우 시트 분리
                 if isinstance(raw, pd.ExcelFile):
                     s_p = [s for s in raw.sheet_names if "계획" in s]
                     s_a = [s for s in raw.sheet_names if "실적" in s]
                     df_p = standardize_df(raw, s_p[0]) if s_p else pd.DataFrame()
                     df_a = standardize_df(raw, s_a[0]) if s_a else pd.DataFrame()
+                    
+                    final_p = process_data_to_long(df_p, "계획")
+                    final_a = process_data_to_long(df_a, "실적")
+                    df_final = pd.concat([final_p, final_a], ignore_index=True)
                 else:
-                    # CSV인 경우 하나로 퉁침 (보통 실적)
-                    df_a = standardize_df(raw)
-                    df_p = pd.DataFrame()
-                
-                final_p = process_data_to_long(df_p, "계획")
-                final_a = process_data_to_long(df_a, "실적")
-                df_final = pd.concat([final_p, final_a], ignore_index=True)
-            except: st.error("데이터 처리 중 오류 발생")
+                    # CSV인 경우
+                    df_std = standardize_df(raw)
+                    df_final = process_data_to_long(df_std, "실적")
+            except:
+                st.error("데이터 처리 중 오류가 발생했습니다.")
 
-    # 🟢 2. 공급량 예측 모드 (파일 1개로 통합)
+    # 🟢 2. 공급량 예측 모드 (파일 1개 필요)
     else:
         with st.sidebar:
             st.warning("📂 **[공급량실적_계획_실적_MJ.xlsx]** 파일 업로드")
+            st.caption("시트: 공급량_실적, 공급량_계획 포함")
             up_mj = st.file_uploader("공급량 통합 파일", type=["xlsx", "csv"], key="mj_up")
             
+        # 로드
         raw = load_data_super_robust(FILE_SUPPLY_MJ, up_mj)
         
         if raw is not None:
             st.sidebar.success("✅ 파일 연결됨")
             
-            # 1) 공급량_실적 시트 (과거 ~2025)
+            # 시트별 데이터 로드
             df_hist = standardize_df(raw, "공급량_실적")
-            # 2) 공급량_계획 시트 (2026~2028 확정)
             df_plan = standardize_df(raw, "공급량_계획")
             
-            # CSV로 들어온 경우 (시트 구분 불가) -> 그냥 하나로 처리
+            # CSV로 들어와서 시트 구분이 안 될 경우 (예외처리)
             if df_hist is None and not isinstance(raw, pd.ExcelFile):
                 df_hist = standardize_df(raw)
             
+            # 병합
             long_h = process_data_to_long(df_hist, "실적")
             long_p = process_data_to_long(df_plan, "확정계획")
             
             df_final = pd.concat([long_h, long_p], ignore_index=True)
             
             if df_final.empty:
-                st.error("🚨 데이터를 읽었으나 내용이 비어있습니다. 시트명('공급량_실적', '공급량_계획')을 확인하세요.")
+                st.error("🚨 데이터가 비어있습니다. '공급량_실적' 또는 '공급량_계획' 시트명을 확인해주세요.")
         else:
             st.info("👈 좌측에서 '공급량실적_계획_실적_MJ' 파일을 업로드하세요.")
 
     # 🟢 메인 화면 렌더링
     if not df_final.empty:
-        # 연도 필터링
         with st.sidebar:
             st.markdown("---")
             all_years = sorted(df_final['연'].unique())
-            default_yrs = [y for y in all_years if y <= 2025] # 기본값은 과거
+            default_yrs = [y for y in all_years if y <= 2025]
             if not default_yrs: default_yrs = all_years
             
             st.markdown("**📅 분석 대상 연도**")
             train_years = st.multiselect("연도 선택", all_years, default=default_yrs, label_visibility="collapsed")
             
-            # 분석용 데이터: 선택된 연도 + 확정계획(공급량인 경우)
-            df_filtered = df_final[df_final['연'].isin(train_years) | (df_final['구분'] == '확정계획')]
+            # 필터링
+            df_final = df_final[df_final['연'].isin(train_years) | (df_final['구분'] == '확정계획')]
 
         if "실적분석" in func:
-            render_analysis(df_filtered, unit)
+            render_analysis(df_final, unit)
         else:
-            # 공급량 예측은 2029년부터 (2028까지 계획 있으므로)
-            # 판매량 예측은 2026년부터
+            # 공급량인 경우 2029년부터 예측
             start_year = 2029 if mode.startswith("2") else 2026
-            
-            # 예측할 때는 '선택된 연도(학습용)' + '확정계획'을 모두 합쳐서 학습 데이터로 씀
-            render_prediction(df_filtered, unit, start_year)
+            render_prediction(df_final, unit, start_year)
 
 if __name__ == "__main__":
     main()
