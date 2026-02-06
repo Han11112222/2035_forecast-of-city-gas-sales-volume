@@ -4,15 +4,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import io
-import requests
-from pathlib import Path
-from urllib.parse import quote
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 
 # ─────────────────────────────────────────────────────────
-# 🟢 1. 기본 설정 & 폰트
+# 🟢 1. 기본 설정
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="도시가스 통합 분석", layout="wide")
 
@@ -119,7 +116,7 @@ def find_sheet(data_dict, keywords):
     return None
 
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 분석 화면 (최근 5년 디폴트 적용)
+# 🟢 3. 분석 화면 (최근 10년 디폴트)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
@@ -129,14 +126,13 @@ def render_analysis_dashboard(long_df, unit_label):
     
     all_years = sorted(df_act['연'].unique())
     
-    # 🔴 [수정됨] 최근 5년치 데이터를 디폴트로 설정
-    if len(all_years) >= 5:
-        default_years = all_years[-5:]
+    # 🔴 [수정] 최근 10년치 데이터를 디폴트로 설정
+    if len(all_years) >= 10:
+        default_years = all_years[-10:]
     else:
         default_years = all_years
         
     selected_years = st.multiselect("연도 선택", options=all_years, default=default_years)
-    
     if not selected_years: return
     
     df_filtered = df_act[df_act['연'].isin(selected_years)]
@@ -158,13 +154,13 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 4. 예측 화면 (2026~2028 계획 반영 + 스택 누적 + 알고리즘 추가)
+# 🟢 4. 예측 화면 (2026~2028 공백 채우기 완벽 구현)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
-    # 1. 학습 데이터 준비
-    # 사용자가 선택한 과거 실적 + '확정계획'(26~28년)
+    # 1. 학습 데이터 (과거 실적 + 선택된 연도)
+    # 확정계획(26~28)도 학습에 반영하여 추세가 튀지 않게 함
     df_train = long_df[
         (long_df['연'].isin(train_years_selected)) | 
         (long_df['구분'] == '확정계획')
@@ -180,19 +176,31 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     ], horizontal=True)
     
     # 3. 예측 수행
-    df_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
+    # 그룹별로 루프를 돌면서 [실적] + [확정계획] + [AI예측]을 하나로 잇습니다.
+    df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index() # 전체 데이터
+    
+    # 학습용 데이터 그룹핑
+    df_train_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
+    
     groups = df_grp['그룹'].unique()
     future_years = np.arange(start_pred_year, 2036).reshape(-1, 1) # 2029~2035 (공급량 기준)
     results = []
     
     for grp in groups:
-        sub = df_grp[df_grp['그룹'] == grp]
-        if len(sub) < 2: continue
+        # A. 학습용 데이터 추출 (모델 학습용)
+        sub_train = df_train_grp[df_train_grp['그룹'] == grp]
         
-        X = sub['연'].values.reshape(-1, 1)
-        y = sub['값'].values
+        # B. 전체 데이터 추출 (2026~2028 확정계획 가져오기용)
+        sub_full = df_grp[df_grp['그룹'] == grp]
+        
+        # 학습 데이터가 너무 적으면 스킵
+        if len(sub_train) < 2: continue
+        
+        X = sub_train['연'].values.reshape(-1, 1)
+        y = sub_train['값'].values
         pred = []
         
+        # ── AI 예측 (2029 ~ 2035) ──
         try:
             if "선형" in pred_method:
                 model = LinearRegression(); model.fit(X, y); pred = model.predict(future_years)
@@ -215,33 +223,42 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             
         pred = [max(0, p) for p in pred]
         
-        # [데이터 합치기]
-        # (1) 과거 실적 및 확정계획 (그대로 사용)
-        for yr, v in zip(sub['연'], sub['값']): 
-            # 구분 라벨링 정교화
-            label = '실적'
-            if yr >= 2026 and yr <= 2028: label = '확정계획(26~28)'
-            elif yr >= start_pred_year: label = '예측'
+        # ── 데이터 합치기 (이 부분이 핵심!) ──
+        
+        # 1. 과거 실적 (train_years_selected에 있는 것만)
+        hist_data = sub_full[sub_full['연'].isin(train_years_selected)]
+        for _, row in hist_data.iterrows():
+            results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '실적'})
             
-            results.append({'연': yr, '그룹': grp, '값': v, '구분': label})
-            
-        # (2) 미래 예측 (29년 이후)
+        # 2. 확정 계획 (2026~2028년, 공급량 모드일 때)
+        # start_pred_year가 2029이면 2026~2028은 확정계획으로 채워야 함
+        if start_pred_year == 2029:
+            plan_data = sub_full[sub_full['연'].between(2026, 2028)]
+            for _, row in plan_data.iterrows():
+                results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '확정계획(26~28)'})
+        
+        # 3. AI 미래 예측 (2029~2035)
         for yr, v in zip(future_years.flatten(), pred): 
             results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
         
     df_res = pd.DataFrame(results)
     
-    # 4. 시각화
+    # 시각화
     st.markdown("---")
-    st.markdown("#### 📈 전체 장기 전망 (추세선)")
+    st.markdown("#### 📈 전체 장기 전망 (실적 -> 확정계획 -> AI예측)")
+    
+    # 선 그래프
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
+    # 예측 시작선
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green", annotation_text="AI 예측 시작")
+    if start_pred_year == 2029:
+        fig.add_vrect(x0=2025.5, x1=2028.5, fillcolor="yellow", opacity=0.1, annotation_text="확정계획 구간")
+        
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
-    st.markdown("#### 🧱 연도별 예측량 구성 (누적 스택)")
-    # 예측 데이터만? 아니면 전체? -> 흐름을 보려면 전체가 좋음
-    fig_stack = px.bar(df_res, x='연', y='값', color='그룹', title="연도별 공급량 구성비 (실적 -> 계획 -> AI예측)", text_auto='.2s')
+    st.markdown("#### 🧱 연도별 공급량 구성 (누적 스택)")
+    fig_stack = px.bar(df_res, x='연', y='값', color='그룹', title="연도별 용도 구성비", text_auto='.2s')
     st.plotly_chart(fig_stack, use_container_width=True)
     
     with st.expander("📋 연도별 상세 데이터 확인"):
@@ -257,20 +274,14 @@ def main():
     
     with st.sidebar:
         st.header("설정")
-        # 1. 명칭 변경 (예측 제거)
-        mode = st.radio("분석 모드", ["1. 판매량", "2. 공급량"], index=1) # 공급량 기본
-        
+        mode = st.radio("분석 모드", ["1. 판매량", "2. 공급량"], index=1)
         sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 가정용 정밀 분석"])
-        
-        # 2. 단위 기본값 변경 (GJ 우선)
-        unit = st.radio("단위 선택", ["열량 (GJ)", "부피 (천m³)"])
+        unit = st.radio("단위", ["열량 (GJ)", "부피 (천m³)"])
         st.markdown("---")
         
-        # 파일 업로더
         st.subheader("파일 업로드")
         up_sales = st.file_uploader("1. 판매량(계획_실적).xlsx", type=["xlsx", "csv"], key="s")
         up_supply = st.file_uploader("2. 공급량실적_계획_실적_MJ.xlsx", type=["xlsx", "csv"], key="p")
-        
         st.markdown("---")
     
     df_final = pd.DataFrame()
@@ -293,12 +304,10 @@ def main():
 
     # [모드 2] 공급량
     else:
-        # 공급량은 2028년까지 확정 계획이 있으므로 2029년부터 AI 예측
-        start_year = 2029 
+        start_year = 2029 # 공급량은 2029년부터 AI 예측 (26~28은 확정계획)
         if up_supply:
             data = load_file_robust(up_supply)
             if data:
-                # 3. 공급량 파일 시트 자동 인식
                 df_hist = find_sheet(data, ["공급량_실적", "실적"])
                 df_plan = find_sheet(data, ["공급량_계획", "계획"]) # 26~28년 데이터
                 
@@ -312,20 +321,20 @@ def main():
             st.info("👈 [공급량 파일]을 업로드하세요.")
             return
 
-    # ── 학습 연도 선택 (사이드바 하단) ──
+    # ── 🔴 학습 연도 선택 (2025년 디폴트 포함) ──
     if not df_final.empty:
         with st.sidebar:
             st.markdown("### 📅 데이터 학습 기간 설정")
+            
             all_years = sorted(df_final['연'].unique())
-            # 기본값: 2024년까지만 선택 (2025 제외, 26~28은 확정계획이라 자동 포함됨)
-            default_yrs = [y for y in all_years if y < 2025] 
+            # 기본값: 모든 연도 포함 (2025년도 포함) -> 형님이 필요시 끔
+            default_yrs = all_years 
             
             train_years = st.multiselect(
-                "학습 연도 선택 (왜곡 방지용)", 
+                "학습에 포함할 연도 (2025년 제외 가능)", 
                 options=all_years, 
                 default=default_yrs
             )
-            st.caption("※ 2025년 데이터가 불완전하면 체크 해제하세요.")
 
         # ── 기능 실행 ──
         if "실적" in sub_mode:
