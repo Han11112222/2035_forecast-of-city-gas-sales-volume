@@ -119,7 +119,7 @@ def find_sheet(data_dict, keywords):
     return None
 
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 분석 화면
+# 🟢 3. 분석 화면 (최근 5년 디폴트 적용)
 # ─────────────────────────────────────────────────────────
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
@@ -128,7 +128,15 @@ def render_analysis_dashboard(long_df, unit_label):
     if df_act.empty: st.error("실적 데이터 없음"); return
     
     all_years = sorted(df_act['연'].unique())
-    selected_years = st.multiselect("연도 선택", options=all_years, default=all_years[-3:] if len(all_years)>=3 else all_years)
+    
+    # 🔴 [수정됨] 최근 5년치 데이터를 디폴트로 설정
+    if len(all_years) >= 5:
+        default_years = all_years[-5:]
+    else:
+        default_years = all_years
+        
+    selected_years = st.multiselect("연도 선택", options=all_years, default=default_years)
+    
     if not selected_years: return
     
     df_filtered = df_act[df_act['연'].isin(selected_years)]
@@ -150,7 +158,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 4. 예측 화면 (2026~2028 계획 반영)
+# 🟢 4. 예측 화면 (2026~2028 계획 반영 + 스택 누적 + 알고리즘 추가)
 # ─────────────────────────────────────────────────────────
 def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
@@ -213,7 +221,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             # 구분 라벨링 정교화
             label = '실적'
             if yr >= 2026 and yr <= 2028: label = '확정계획(26~28)'
-            elif yr >= start_pred_year: label = '예측' # 혹시 겹치면
+            elif yr >= start_pred_year: label = '예측'
             
             results.append({'연': yr, '그룹': grp, '값': v, '구분': label})
             
@@ -227,7 +235,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
-    # 구분선 (예측 시작점)
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green", annotation_text="AI 예측 시작")
     st.plotly_chart(fig, use_container_width=True)
     
@@ -310,14 +317,15 @@ def main():
         with st.sidebar:
             st.markdown("### 📅 데이터 학습 기간 설정")
             all_years = sorted(df_final['연'].unique())
-            # 기본값: 2024년까지만 (2025년 제외, 26~28은 확정계획이라 자동 포함됨)
+            # 기본값: 2024년까지만 선택 (2025 제외, 26~28은 확정계획이라 자동 포함됨)
             default_yrs = [y for y in all_years if y < 2025] 
             
             train_years = st.multiselect(
-                "과거 학습 연도 (2025년 제외 권장)", 
+                "학습 연도 선택 (왜곡 방지용)", 
                 options=all_years, 
                 default=default_yrs
             )
+            st.caption("※ 2025년 데이터가 불완전하면 체크 해제하세요.")
 
         # ── 기능 실행 ──
         if "실적" in sub_mode:
@@ -327,7 +335,6 @@ def main():
         elif "가정용" in sub_mode:
             with st.sidebar:
                 up_t = st.file_uploader("기온 파일(.csv)", type=["csv", "xlsx"])
-            # 기온 분석 로직 (생략된 부분 복구 필요시 요청주세요, 일단 틀 유지)
             st.info("기온 데이터 업로드 시 분석 가능")
 
 if __name__ == "__main__":
