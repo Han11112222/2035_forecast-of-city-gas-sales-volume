@@ -9,7 +9,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 
 # ─────────────────────────────────────────────────────────
-# 🟢 1. 기본 설정 & 폰트
+# 🟢 1. 기본 설정
 # ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="도시가스 통합 분석", layout="wide")
 
@@ -23,7 +23,7 @@ def set_korean_font():
 set_korean_font()
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 용도별 매핑 (판매량 vs 공급량 확실한 분리)
+# 🟢 2. 용도별 매핑
 # ─────────────────────────────────────────────────────────
 
 # 1) 판매량용 매핑 (기존 유지)
@@ -38,7 +38,6 @@ MAPPING_SALES = {
 }
 
 # 2) 공급량용 매핑 (형님 요청: 4대 분류 지정 + 나머지는 그대로)
-# 여기에 없는 컬럼은 '그룹명 = 컬럼명'으로 처리됨 (나머지라고 퉁치지 않음)
 MAPPING_SUPPLY_SPECIFIC = {
     # 1. 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", 
@@ -54,34 +53,53 @@ MAPPING_SUPPLY_SPECIFIC = {
     # 4. 수송용
     "수송용(CNG)": "수송용", "CNG": "수송용",
     "수송용(BIO)": "수송용", "BIO": "수송용"
+    
+    # 나머지는 매핑하지 않고 원래 이름 그대로 사용
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 파일 로딩 및 전처리 (User Code Base)
+# 🟢 3. 파일 로딩 및 전처리 (에러 방지 강화)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
-def load_file_robust(uploaded_file):
-    if uploaded_file is None: return None
-    try:
-        excel = pd.ExcelFile(uploaded_file, engine='openpyxl')
-        sheets = {name: excel.parse(name) for name in excel.sheet_names}
-        return sheets
-    except:
+def load_files_smart(uploaded_files):
+    if not uploaded_files: return {}
+    data_dict = {}
+    if not isinstance(uploaded_files, list): uploaded_files = [uploaded_files]
+    
+    for file in uploaded_files:
+        # 1. CSV 우선 시도 (판매량 파일이 CSV인 경우가 많음)
         try:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-            return {"default": df}
+            file.seek(0)
+            df = pd.read_csv(file, encoding='utf-8-sig')
+            data_dict[f"{file.name}"] = df
+            continue
         except:
-            try:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, encoding='cp949')
-                return {"default": df}
-            except: return None
+            pass
+            
+        try:
+            file.seek(0)
+            df = pd.read_csv(file, encoding='cp949')
+            data_dict[f"{file.name}"] = df
+            continue
+        except:
+            pass
+
+        # 2. 엑셀 시도
+        try:
+            file.seek(0)
+            excel = pd.ExcelFile(file, engine='openpyxl')
+            for sheet in excel.sheet_names:
+                data_dict[f"{file.name}_{sheet}"] = excel.parse(sheet)
+        except:
+            pass
+            
+    return data_dict
 
 def clean_df(df):
     if df is None: return pd.DataFrame()
     df = df.copy()
     df.columns = df.columns.astype(str).str.strip()
+    # Unnamed 컬럼 제거
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     if '날짜' in df.columns:
         df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
@@ -90,67 +108,80 @@ def clean_df(df):
     return df
 
 def make_long_data(df, label, mode='sales'):
-    """mode에 따라 매핑 로직 분기"""
+    """데이터 전처리 및 불필요한 열/0값 제거"""
     df = clean_df(df)
     if df.empty or '연' not in df.columns or '월' not in df.columns: return pd.DataFrame()
     
     records = []
+    # 연, 월 숫자로 변환
     df['연'] = pd.to_numeric(df['연'], errors='coerce')
     df['월'] = pd.to_numeric(df['월'], errors='coerce')
     df = df.dropna(subset=['연', '월'])
     
-    # 제외할 컬럼들
+    # 🗑️ 제외할 컬럼 리스트 (시스템 컬럼)
     exclude_cols = ['연', '월', '날짜', '평균기온', '총공급량', '총합계', '비교(V-W)', '소 계', '소계']
 
     for col in df.columns:
         if col in exclude_cols: continue
         
+        # 🗑️ "열 1", "열 2" 등 쓰레기 컬럼 제거
+        if "열" in col and any(char.isdigit() for char in col):
+            continue
+        if "Unnamed" in col:
+            continue
+
         group = None
         
         if mode == 'sales':
-            # 판매량은 매핑표에 있는 것만 가져옴 (엄격)
             group = MAPPING_SALES.get(col)
             if not group: continue 
         else: # supply
-            # 공급량은 매핑표에 있으면 쓰고, 없으면 원래 이름 그대로 씀 (나머지 살리기)
-            group = MAPPING_SUPPLY_SPECIFIC.get(col, col)
-            # 단, 데이터가 숫자가 아닌 컬럼은 스킵
+            # 1. 숫자형 데이터인지 확인 (문자열 컬럼 제외)
             if df[col].dtype == object: continue
+            
+            # 2. 매핑 확인 (없으면 원래 이름 사용)
+            group = MAPPING_SUPPLY_SPECIFIC.get(col, col)
+
+        # 값 추출
+        val_series = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # 🗑️ 값이 전부 0인 컬럼은 아예 제외 (형님 요청)
+        if val_series.sum() == 0:
+            continue
 
         sub = df[['연', '월']].copy()
         sub['그룹'] = group
         sub['용도'] = col
         sub['구분'] = label
-        sub['값'] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        sub['값'] = val_series
+        
+        # 🗑️ 개별 행에서도 값이 0이면 제외 (그래프 깔끔하게)
+        sub = sub[sub['값'] != 0]
+        
         records.append(sub)
         
     if not records: return pd.DataFrame()
     return pd.concat(records, ignore_index=True)
 
-def find_sheet(data_dict, keywords):
+def find_target_df(data_dict, type_keywords, unit_keyword=None):
     if not data_dict: return None
-    for name, df in data_dict.items():
-        clean = name.replace(" ", "")
-        for k in keywords:
-            if k in clean: return df
-    if len(data_dict) == 1: return list(data_dict.values())[0]
-    return None
-
-def find_sheet_with_unit(data_dict, keywords, unit_key):
-    """키워드와 단위(열량/부피)가 모두 맞는 시트 찾기"""
-    if not data_dict: return None
-    # 1순위: 키워드 + 단위
-    for name, df in data_dict.items():
-        clean = name.replace(" ", "")
-        if any(k in clean for k in keywords) and (unit_key in clean):
+    
+    # 1. 키워드 + 단위
+    if unit_keyword:
+        for key, df in data_dict.items():
+            clean_key = key.replace(" ", "")
+            if any(k in clean_key for k in type_keywords) and (unit_keyword in clean_key):
+                return df
+    
+    # 2. 키워드만
+    for key, df in data_dict.items():
+        clean_key = key.replace(" ", "")
+        if any(k in clean_key for k in type_keywords):
             return df
-    # 2순위: 키워드만 (단위가 파일명에 없을 수도 있음)
-    for name, df in data_dict.items():
-        clean = name.replace(" ", "")
-        if any(k in clean for k in keywords):
-            return df
-    # 3순위: 그냥 첫번째
+            
+    # 3. 데이터가 하나뿐이면 그거라도 반환 (판매량 에러 방지)
     if len(data_dict) == 1: return list(data_dict.values())[0]
+    
     return None
 
 # ─────────────────────────────────────────────────────────
@@ -163,7 +194,6 @@ def render_analysis_dashboard(long_df, unit_label):
     if df_act.empty: st.error("실적 데이터 없음"); return
     
     all_years = sorted([int(y) for y in df_act['연'].unique()])
-    
     if len(all_years) >= 10: default_years = all_years[-10:]
     else: default_years = all_years
         
@@ -189,11 +219,11 @@ def render_analysis_dashboard(long_df, unit_label):
     
     st.markdown("##### 📋 상세 수치")
     piv = df_filtered.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-    piv['소계'] = piv.sum(axis=1) # 🔴 소계 추가
+    piv['소계'] = piv.sum(axis=1)
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면 (형님 코드 + 에러 수정)
+# 🟢 5. 예측 화면
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -218,7 +248,6 @@ def generate_trend_insight(hist_df, pred_df):
 def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected, is_supply_mode):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
-    # 🔴 학습 데이터 필터링
     filter_cond = long_df['연'].isin(train_years_selected)
     if is_supply_mode:
         filter_cond = filter_cond | (long_df['구분'] == '확정계획')
@@ -230,22 +259,17 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("##### 📊 추세 분석 모델 선택")
     pred_method = st.radio("방법", ["선형 회귀", "2차 곡선", "3차 곡선", "로그 추세", "지수 평활", "CAGR"], horizontal=True)
     
-    # 모델 설명
+    # 모델 설명 (생략 가능하나 유지)
     if "선형" in pred_method: st.info("ℹ️ 매년 일정량씩 꾸준히 변하는 직선 추세")
     elif "2차" in pred_method: st.info("ℹ️ 성장이 가속화되거나 둔화되는 곡선 추세")
-    elif "3차" in pred_method: st.info("ℹ️ 상승과 하락 사이클이 있는 복잡한 추세")
-    elif "로그" in pred_method: st.info("ℹ️ 초반 급성장 후 안정화되는 패턴")
-    elif "지수" in pred_method: st.info("ℹ️ 최근 실적에 가중치를 둔 민감한 추세")
-    elif "CAGR" in pred_method: st.info("ℹ️ 과거 연평균 성장률 유지 가정")
-
-    # 전체 그룹핑
+    
     df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index()
     df_train_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
     groups = df_grp['그룹'].unique()
     
-    # 🔴 예측 구간 설정
     future_years = np.arange(start_pred_year, 2036).reshape(-1, 1)
     results = []
+    
     total_hist_vals = []
     total_pred_vals = []
 
@@ -275,15 +299,13 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             
         pred = [max(0, p) for p in pred]
         
-        # 🔴 [데이터 병합 - 중복 방지 핵심 로직]
+        # 🔴 [데이터 병합 - 중복 방지]
         added_years = set()
         
         # 1. 과거 실적
-        # 공급량 모드(2029 시작) -> 26년 미만만 실적으로 취급
         hist_mask = sub_full['연'].isin(train_years_selected)
         if is_supply_mode and start_pred_year == 2029:
              hist_mask = hist_mask & (sub_full['연'] < 2026)
-        # 판매량 모드(2026 시작) -> 2026 미만만 실적 취급
         elif not is_supply_mode:
              hist_mask = hist_mask & (sub_full['연'] < start_pred_year)
         
@@ -296,16 +318,15 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             
         # 2. 확정 계획 (공급량 전용, 2026~2028)
         if is_supply_mode and start_pred_year == 2029:
-            # 파일에서 직접 확정계획 찾아서 넣기
             plan_data = sub_full[sub_full['연'].between(2026, 2028)]
             for _, row in plan_data.iterrows():
+                # 이미 추가된 연도(실적)가 아닐 경우에만 추가
                 if row['연'] not in added_years:
                     results.append({'연': row['연'], '그룹': grp, '값': row['값'], '구분': '확정계획'})
                     added_years.add(row['연'])
                 
         # 3. AI 미래 예측
         for yr, v in zip(future_years.flatten(), pred):
-            # 공급량 2029년 이후 파일에 계획 데이터가 있어도 무시하고 AI값 사용 (더블 방지)
             if yr not in added_years: 
                 results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
                 total_pred_vals.append({'연': yr, '값': v})
@@ -316,11 +337,9 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
     if insight_text: st.success(insight_text)
     
-    # 시각화
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
-    
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green")
     fig.add_vrect(x0=start_pred_year-0.5, x1=2035.5, fillcolor="green", opacity=0.05, annotation_text="예측 값", annotation_position="inside top")
     
@@ -338,7 +357,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     
     with st.expander("📋 연도별 상세 데이터 확인"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-        piv['소계'] = piv.sum(axis=1) # 소계 추가
+        piv['소계'] = piv.sum(axis=1)
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
@@ -349,7 +368,7 @@ def render_household_analysis(long_df, temp_file):
     if temp_file is None:
         st.warning("⚠️ 기온 데이터 파일(.csv)을 업로드해주세요."); return
         
-    temp_dict = load_file_robust(temp_file)
+    temp_dict = load_files_smart(temp_file)
     if not temp_dict: return
     
     df_temp = list(temp_dict.values())[0]
@@ -380,6 +399,7 @@ def render_household_analysis(long_df, temp_file):
 # ─────────────────────────────────────────────────────────
 def render_final_check(long_df, unit_label):
     st.subheader(f"🏁 최종 확정 데이터 시각화 ({unit_label})")
+    
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(f"#### 📈 연도별 추세")
@@ -387,11 +407,13 @@ def render_final_check(long_df, unit_label):
         fig1 = px.line(yr_grp, x='연', y='값', color='그룹', markers=True)
         fig1.update_xaxes(dtick=1, tickformat="d")
         st.plotly_chart(fig1, use_container_width=True)
+        
     with col2:
         st.markdown(f"#### 🧱 용도별 구성비")
         fig2 = px.bar(yr_grp, x='연', y='값', color='그룹', text_auto='.2s')
         fig2.update_xaxes(dtick=1, tickformat="d")
         st.plotly_chart(fig2, use_container_width=True)
+        
     st.markdown("#### 📋 최종 데이터 상세")
     piv = long_df.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
     piv['소계'] = piv.sum(axis=1)
@@ -419,10 +441,10 @@ def main():
         st.markdown("---")
         st.subheader("파일 업로드")
         
-        # 🔴 3가지 업로더 모두 노출 (형님 요청)
         up_sales = st.file_uploader("1. 판매량(계획_실적).xlsx", type=["xlsx", "csv"], key="s", accept_multiple_files=True)
         up_supply = st.file_uploader("2. 공급량실적_계획_실적_MJ.xlsx", type=["xlsx", "csv"], key="p")
         up_final = st.file_uploader("3. 최종값.xlsx", type=["xlsx", "csv"], key="f")
+            
         st.markdown("---")
     
     df_final = pd.DataFrame()
@@ -433,23 +455,21 @@ def main():
     if mode.startswith("1"):
         start_year = 2026
         if up_sales:
-            data = load_file_robust(up_sales) # List 지원하는 robust 로더
-            # 🔴 스마트 필터: '실적' + 단위 일치하는 시트만 로드
-            if isinstance(data, dict): # robust로더가 dict반환시
-                df_a = find_sheet_with_unit(data, ["실적"], unit_key)
-                if df_a is None and len(data) == 1: df_a = list(data.values())[0]
-            elif isinstance(data, list): # 여러 파일일 경우
-                 data_dict = load_files_smart(up_sales)
-                 df_a = find_sheet_with_unit(data_dict, ["실적"], unit_key)
-                 if df_a is None and len(data_dict) >= 1: df_a = list(data_dict.values())[0]
-            else: # 단일파일 바로 로드된 경우
-                 df_a = data.get("default")
-
-            if df_a is not None:
-                long_a = make_long_data(df_a, "실적", 'sales')
-                # 2025년 이하만 사용 (과거 실적) -> 2026부터 예측
-                long_a = long_a[long_a['연'] <= 2025] 
-                df_final = pd.concat([long_a], ignore_index=True)
+            data = load_files_smart(up_sales)
+            if data:
+                # 1. '실적' + 단위 일치 파일만 로드 (계획 무시)
+                df_a = find_target_df(data, ["실적"], unit_key)
+                
+                # CSV 예외 (파일명에 없어도 하나면 로드)
+                if df_a is None and len(data) >= 1: 
+                    # 키워드 없어도 그냥 첫번째꺼 씀 (에러 방지)
+                    df_a = list(data.values())[0]
+                
+                if df_a is not None:
+                    long_a = make_long_data(df_a, "실적", 'sales')
+                    # 2025년 이하만 사용 (과거 실적) -> 2026부터 예측
+                    long_a = long_a[long_a['연'] <= 2025] 
+                    df_final = pd.concat([long_a], ignore_index=True)
         else: st.info("👈 [판매량 파일]을 업로드하세요."); return
 
     # 🟢 [모드 2] 공급량
@@ -457,10 +477,10 @@ def main():
         start_year = 2029 
         is_supply = True
         if up_supply:
-            data = load_file_robust(up_supply)
+            data = load_files_smart([up_supply])
             if data:
-                df_hist = find_sheet(data, ["공급량_실적", "실적"])
-                df_plan = find_sheet(data, ["공급량_계획", "계획"])
+                df_hist = find_target_df(data, ["공급량_실적", "실적"], None)
+                df_plan = find_target_df(data, ["공급량_계획", "계획"], None)
                 if df_hist is None and df_plan is None and len(data) == 1: df_hist = list(data.values())[0]
                 
                 long_h = make_long_data(df_hist, "실적", 'supply')
@@ -471,7 +491,7 @@ def main():
     # 🟢 [모드 3] 최종값
     elif mode.startswith("3"):
         if up_final:
-            data = load_file_robust(up_final)
+            data = load_files_smart([up_final])
             if data:
                 df_raw = list(data.values())[0]
                 df_final = make_long_data(df_raw, "최종값", 'supply')
