@@ -8,7 +8,6 @@ import requests
 from pathlib import Path
 from urllib.parse import quote
 from sklearn.linear_model import LinearRegression
-from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────
 # 🟢 1. 기본 설정 & 폰트
@@ -24,112 +23,100 @@ def set_korean_font():
 
 set_korean_font()
 
-# 🟢 깃허브 설정 (업로드 없을 시 백업용)
+# 🟢 깃허브 설정 (백업용)
 GITHUB_USER = "HanYeop"
 REPO_NAME = "GasProject"
 BRANCH = "main" 
+
 # 파일명 상수
 FILE_SALES = "판매량(계획_실적).xlsx"       
-FILE_SUPPLY_HIST = "상품별공급량_MJ.xlsx"   
-FILE_SUPPLY_PLAN = "사업계획최종.xlsx"      
+FILE_SUPPLY_MJ = "공급량실적_계획_실적_MJ.xlsx" # 공급량 통합 파일
 FILE_TEMP = "기온.csv"
 
-# 🟢 [핵심] 모든 파일의 컬럼명을 완벽하게 대응하는 매핑 테이블
+# 🟢 [매핑 테이블] 형님 파일의 모든 컬럼명 대응
 USE_COL_TO_GROUP = {
-    # 가정용
+    # 🏠 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", "자가열전용": "가정용",
     "개별난방": "가정용", "중앙난방": "가정용", "가정용소계": "가정용",
     
-    # 영업용 (MJ 파일 특이 명칭 포함)
+    # 🏪 영업용
     "일반용": "영업용", "일반용(1)": "영업용", "일반용(2)": "영업용", 
     "영업용_일반용1": "영업용", "영업용_일반용2": "영업용", 
-    "일반용1(영업)": "영업용", "일반용2(영업)": "영업용",
+    "일반용1(영업)": "영업용", "일반용2(영업)": "영업용", "일반용1": "영업용",
     
-    # 업무용 (MJ 파일 특이 명칭 포함)
+    # 🏢 업무용
     "업무난방용": "업무용", "냉방용": "업무용", "냉난방용": "업무용", "주한미군": "업무용",
     "업무용_일반용1": "업무용", "업무용_일반용2": "업무용", "업무용_업무난방": "업무용", 
     "업무용_냉난방": "업무용", "업무용_주한미군": "업무용", 
     "일반용1(업무)": "업무용", "일반용2(업무)": "업무용",
     
-    # 산업용
+    # 🏭 산업용
     "산업용": "산업용",
     
-    # 수송용
+    # 🚌 수송용
     "수송용(CNG)": "수송용", "수송용(BIO)": "수송용", "CNG": "수송용", "BIO": "수송용",
     
-    # 발전/기타
+    # ⚡ 발전/기타
     "열병합용": "열병합", "열병합용1": "열병합", "열병합용2": "열병합",
     "연료전지용": "연료전지", "연료전지": "연료전지",
     "열전용설비용": "열전용설비용", "열전용설비용(주택외)": "열전용설비용"
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 만능 데이터 로더 (확장자 무시하고 내용으로 읽기)
+# 🟢 2. 만능 데이터 로더
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
-def load_data_robust(filename, uploaded_file=None):
-    """
-    업로드된 파일이 있으면 그걸 쓰고, 없으면 깃허브에서 가져옴.
-    확장자가 .xlsx라도 내용이 CSV면 CSV로 읽어내는 기능 포함.
-    """
+def load_data_super_robust(filename, uploaded_file=None):
+    """업로드 > 로컬 > 깃허브 순으로 로드 (확장자 무시)"""
     
-    # 내부 함수: 파일 객체를 받아서 엑셀 -> CSV(utf-8) -> CSV(cp949) 순서로 시도
-    def try_read_any_format(file_obj):
-        # 1. 엑셀로 시도
-        try: 
-            return pd.ExcelFile(file_obj, engine='openpyxl')
-        except:
-            pass
-            
+    def try_read_stream(file_obj):
+        # 1. Excel로 시도
+        try: return pd.ExcelFile(file_obj, engine='openpyxl')
+        except: pass
+        
         # 2. CSV (utf-8) 시도
-        try:
-            if hasattr(file_obj, 'seek'): file_obj.seek(0)
-            return pd.read_csv(file_obj, encoding='utf-8-sig')
-        except:
-            pass
-            
+        if hasattr(file_obj, 'seek'): file_obj.seek(0)
+        try: return pd.read_csv(file_obj, encoding='utf-8-sig')
+        except: pass
+        
         # 3. CSV (cp949) 시도
-        try:
-            if hasattr(file_obj, 'seek'): file_obj.seek(0)
-            return pd.read_csv(file_obj, encoding='cp949')
-        except:
-            return None
+        if hasattr(file_obj, 'seek'): file_obj.seek(0)
+        try: return pd.read_csv(file_obj, encoding='cp949')
+        except: pass
+        return None
 
-    # A. 업로드 파일 우선 (형님이 직접 올린 것)
-    if uploaded_file is not None:
-        return try_read_any_format(uploaded_file)
-
-    # B. 깃허브 URL 백업 (업로드 안 했을 때)
+    if uploaded_file: return try_read_stream(uploaded_file)
+    if Path(filename).exists():
+        with open(filename, 'rb') as f: return try_read_stream(io.BytesIO(f.read()))
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}/{quote(filename)}"
-        response = requests.get(url)
-        if response.status_code == 200:
-            return try_read_any_format(io.BytesIO(response.content))
+        r = requests.get(url)
+        if r.status_code == 200: return try_read_stream(io.BytesIO(r.content))
     except: pass
     
     return None
 
-def standardize_df(df_or_excel):
-    """어떤 형태든 DataFrame으로 변환하고 컬럼 정리"""
+def standardize_df(df_or_excel, sheet_name=None):
+    """데이터프레임 표준화 (시트 지정 가능)"""
     if df_or_excel is None: return None
     
+    df = None
     if isinstance(df_or_excel, pd.ExcelFile):
-        # 엑셀 파일이면 첫 번째 시트를 씀
-        df = df_or_excel.parse(0)
+        # 시트 이름이 지정되었고 존재하면 그 시트 사용
+        if sheet_name and sheet_name in df_or_excel.sheet_names:
+            df = df_or_excel.parse(sheet_name)
+        elif sheet_name is None: # 시트 지정 안했으면 첫번째
+            df = df_or_excel.parse(0)
+        else: # 시트가 없으면 None
+            return None
     else:
-        df = df_or_excel
+        df = df_or_excel # CSV인 경우
         
-    # 복사본 생성
     df = df.copy()
-    
-    # 1. 컬럼명 공백 제거 (매우 중요)
-    df.columns = df.columns.astype(str).str.strip()
-    
-    # 2. Unnamed 컬럼 제거
+    df.columns = df.columns.astype(str).str.strip() # 공백 제거
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     
-    # 3. 날짜/연/월 처리 (MJ 파일 대응)
-    # '날짜' 컬럼이 있는데 '연' 컬럼이 없으면 만듦
+    # 날짜 처리
     if '날짜' in df.columns:
         df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
         if '연' not in df.columns: df['연'] = df['날짜'].dt.year
@@ -137,23 +124,19 @@ def standardize_df(df_or_excel):
         
     return df
 
-def process_data_to_long(df, label_name, mapping):
-    """데이터를 분석용 긴 형태(Long Format)로 변환"""
+def process_data_to_long(df, label_name):
+    """매핑 테이블을 이용해 분석용 데이터로 변환"""
     if df is None or df.empty: return pd.DataFrame()
     
-    # 필수 컬럼 확인
-    if '연' not in df.columns or '월' not in df.columns:
-        return pd.DataFrame() 
+    if '연' not in df.columns or '월' not in df.columns: return pd.DataFrame() 
         
     records = []
-    
-    # 숫자형 변환
     df['연'] = pd.to_numeric(df['연'], errors='coerce')
     df['월'] = pd.to_numeric(df['월'], errors='coerce')
     df = df.dropna(subset=['연', '월'])
     
     for col in df.columns:
-        group = mapping.get(col)
+        group = USE_COL_TO_GROUP.get(col)
         if not group: continue
         
         sub = df[['연', '월']].copy()
@@ -166,26 +149,23 @@ def process_data_to_long(df, label_name, mapping):
     if not records: return pd.DataFrame()
     return pd.concat(records, ignore_index=True)
 
-def preprocess_temp(df):
-    if df is None: return None
-    df = standardize_df(df)
+def load_temp_universal(uploaded_file):
+    raw = load_data_super_robust(FILE_TEMP, uploaded_file)
+    if raw is None: return None
     
+    df = standardize_df(raw)
     cols = [c for c in df.columns if "기온" in c]
     if not cols: return None
-    target = cols[0]
     
-    monthly = df.groupby(['연', '월'])[target].mean().reset_index()
-    monthly.rename(columns={target: '평균기온'}, inplace=True)
+    monthly = df.groupby(['연', '월'])[cols[0]].mean().reset_index()
+    monthly.rename(columns={cols[0]: '평균기온'}, inplace=True)
     return monthly
-
-def load_temp_universal(uploaded_file):
-    return load_data_robust(FILE_TEMP, uploaded_file)
 
 # ─────────────────────────────────────────────────────────
 # 🟢 3. 분석 및 시각화
 # ─────────────────────────────────────────────────────────
 def render_analysis(df, unit):
-    st.subheader(f"📊 분석 결과 ({unit})")
+    st.subheader(f"📊 실적 현황 분석 ({unit})")
     if df.empty: st.warning("데이터가 없습니다."); return
 
     all_years = sorted(df['연'].unique())
@@ -199,7 +179,6 @@ def render_analysis(df, unit):
         mon_grp = df_viz.groupby(['연', '월'])['값'].sum().reset_index()
         fig = px.line(mon_grp, x='월', y='값', color='연', markers=True)
         st.plotly_chart(fig, use_container_width=True)
-        
     with col2:
         st.markdown("#### 🧱 용도별 구성")
         yr_grp = df_viz.groupby(['연', '그룹'])['값'].sum().reset_index()
@@ -211,11 +190,11 @@ def render_analysis(df, unit):
 def render_prediction(df, unit, start_year):
     st.subheader(f"🔮 2035 장기 예측 ({unit})")
     
-    # 학습 데이터 (예측 시작년도 이전)
+    # 학습 데이터: 예측 시작년도 이전 데이터 (실적 + 확정계획)
     train_df = df[df['연'] < start_year]
-    if train_df.empty: st.warning("과거 데이터 부족"); return
+    if train_df.empty: st.warning("학습할 과거 데이터가 부족합니다."); return
         
-    st.info(f"학습 데이터 구간: {int(train_df['연'].min())}년 ~ {int(train_df['연'].max())}년")
+    st.info(f"학습 데이터 구간: {int(train_df['연'].min())}년 ~ {int(train_df['연'].max())}년 (실적 + 확정계획)")
     
     method = st.radio("예측 방법", ["선형 회귀", "2차 곡선", "로그 추세", "지수 평활", "CAGR"], horizontal=True)
     
@@ -251,7 +230,7 @@ def render_prediction(df, unit, start_year):
             
         pred = [max(0, p) for p in pred]
         
-        for yr, val in zip(sub['연'], sub['값']): results.append({'연': yr, '그룹': grp, '값': val, '구분': '실적'})
+        for yr, val in zip(sub['연'], sub['값']): results.append({'연': yr, '그룹': grp, '값': val, '구분': '실적(계획포함)'})
         for yr, val in zip(future_years.flatten(), pred): results.append({'연': yr, '그룹': grp, '값': val, '구분': '예측'})
         
     res_df = pd.DataFrame(results)
@@ -261,41 +240,20 @@ def render_prediction(df, unit, start_year):
     fig.add_vline(x=start_year-0.5, line_dash="dash", line_color="green")
     st.plotly_chart(fig, use_container_width=True)
     
-    st.markdown("#### 📋 예측 데이터 상세")
+    st.markdown("#### 📋 연도별 예측 데이터")
     pred_only = res_df[res_df['구분'] == '예측']
     st.dataframe(pred_only.pivot_table(index='연', columns='그룹', values='값').style.format("{:,.0f}"), use_container_width=True)
-
-def render_household(long_df, df_temp, unit_label):
-    st.subheader(f"🏠 가정용 정밀 분석")
-    temp_df = preprocess_temp(df_temp)
-    if temp_df is None: st.error("🚨 기온 데이터 없음"); return
-
-    df_home = long_df[long_df['그룹'] == '가정용'].copy()
-    df_merged = pd.merge(df_home, temp_df, on=['연', '월'], how='inner')
-    if df_merged.empty: st.warning("데이터 기간 불일치"); return
-
-    years = sorted(df_merged['연'].unique())
-    sel_years = st.multiselect("분석 연도", years, default=years, key="house_years", label_visibility="collapsed")
-    if not sel_years: return
-    
-    df_final = df_merged[df_merged['연'].isin(sel_years)]
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        fig = px.scatter(df_final, x='평균기온', y='값', color='연', trendline="ols", title="기온 vs 판매량")
-        st.plotly_chart(fig, use_container_width=True)
-    with col2:
-        st.metric("상관계수", f"{df_final['평균기온'].corr(df_final['값']):.2f}")
 
 # ─────────────────────────────────────────────────────────
 # 🟢 4. 메인 실행
 # ─────────────────────────────────────────────────────────
 def main():
-    st.title("🔥 도시가스 판매/공급 통합 분석 시스템")
+    st.title("🔥 도시가스 판매/공급 통합 분석")
     
     with st.sidebar:
         st.header("설정")
         mode = st.radio("분석 모드", ["1. 판매량 예측", "2. 공급량 예측"])
-        func = st.radio("기능", ["실적분석", "2035 예측", "가정용 정밀 분석"])
+        func = st.radio("기능", ["실적분석", "2035 예측"])
         unit = st.radio("단위", ["부피(천m³)", "열량(GJ)"])
         st.markdown("---")
         
@@ -304,84 +262,82 @@ def main():
     # 🟢 1. 판매량 예측 모드
     if mode.startswith("1"):
         with st.sidebar:
-            st.caption("필요: 판매량(계획_실적).xlsx")
-            up = st.file_uploader("판매량 파일 업로드", type=["xlsx", "csv"])
+            st.warning("📂 **[판매량(계획_실적).xlsx]** 파일 업로드")
+            up = st.file_uploader("판매량 파일", type=["xlsx", "csv"], key="sales_up")
             
-        raw = load_data_robust(FILE_SALES, up)
-        
+        raw = load_data_super_robust(FILE_SALES, up)
         if raw is not None:
             try:
-                # 엑셀 시트 분리 시도
+                # 판매량은 '계획', '실적' 시트가 있거나 파일명에 포함됨
                 if isinstance(raw, pd.ExcelFile):
                     s_p = [s for s in raw.sheet_names if "계획" in s]
                     s_a = [s for s in raw.sheet_names if "실적" in s]
-                    
-                    df_p = standardize_df(raw.parse(s_p[0])) if s_p else pd.DataFrame()
-                    df_a = standardize_df(raw.parse(s_a[0])) if s_a else pd.DataFrame()
-                    
-                    final_p = process_data_to_long(df_p, "계획", USE_COL_TO_GROUP)
-                    final_a = process_data_to_long(df_a, "실적", USE_COL_TO_GROUP)
-                    df_final = pd.concat([final_p, final_a], ignore_index=True)
+                    df_p = standardize_df(raw, s_p[0]) if s_p else pd.DataFrame()
+                    df_a = standardize_df(raw, s_a[0]) if s_a else pd.DataFrame()
                 else:
-                    # CSV인 경우
-                    df_std = standardize_df(raw)
-                    df_final = process_data_to_long(df_std, "실적", USE_COL_TO_GROUP)
-            except Exception as e: st.error(f"오류: {e}")
-        else:
-            st.info("👈 좌측에서 '판매량' 파일을 업로드하세요.")
+                    # CSV인 경우 하나로 퉁침 (보통 실적)
+                    df_a = standardize_df(raw)
+                    df_p = pd.DataFrame()
+                
+                final_p = process_data_to_long(df_p, "계획")
+                final_a = process_data_to_long(df_a, "실적")
+                df_final = pd.concat([final_p, final_a], ignore_index=True)
+            except: st.error("데이터 처리 중 오류 발생")
 
-    # 🟢 2. 공급량 예측 모드
+    # 🟢 2. 공급량 예측 모드 (파일 1개로 통합)
     else:
         with st.sidebar:
-            st.caption("필요: 1)과거실적(MJ), 2)중기계획")
-            up_h = st.file_uploader("과거실적(상품별공급량) 업로드", type=["xlsx", "csv"])
-            up_p = st.file_uploader("중기계획(사업계획) 업로드", type=["xlsx", "csv"])
+            st.warning("📂 **[공급량실적_계획_실적_MJ.xlsx]** 파일 업로드")
+            up_mj = st.file_uploader("공급량 통합 파일", type=["xlsx", "csv"], key="mj_up")
             
-        raw_h = load_data_robust(FILE_SUPPLY_HIST, up_h)
-        raw_p = load_data_robust(FILE_SUPPLY_PLAN, up_p)
+        raw = load_data_super_robust(FILE_SUPPLY_MJ, up_mj)
         
-        if raw_h is not None and raw_p is not None:
-            st.sidebar.success("✅ 파일 2개 연결됨")
+        if raw is not None:
+            st.sidebar.success("✅ 파일 연결됨")
             
-            # 1) 과거 실적 처리
-            df_h = standardize_df(raw_h)
-            long_h = process_data_to_long(df_h, "실적", USE_COL_TO_GROUP)
+            # 1) 공급량_실적 시트 (과거 ~2025)
+            df_hist = standardize_df(raw, "공급량_실적")
+            # 2) 공급량_계획 시트 (2026~2028 확정)
+            df_plan = standardize_df(raw, "공급량_계획")
             
-            # 2) 중기 계획 처리
-            df_p = standardize_df(raw_p)
-            long_p = process_data_to_long(df_p, "확정계획", USE_COL_TO_GROUP)
+            # CSV로 들어온 경우 (시트 구분 불가) -> 그냥 하나로 처리
+            if df_hist is None and not isinstance(raw, pd.ExcelFile):
+                df_hist = standardize_df(raw)
+            
+            long_h = process_data_to_long(df_hist, "실적")
+            long_p = process_data_to_long(df_plan, "확정계획")
             
             df_final = pd.concat([long_h, long_p], ignore_index=True)
+            
+            if df_final.empty:
+                st.error("🚨 데이터를 읽었으나 내용이 비어있습니다. 시트명('공급량_실적', '공급량_계획')을 확인하세요.")
         else:
-            st.info("👈 좌측에서 '상품별공급량'과 '사업계획' 파일을 모두 업로드하세요.")
+            st.info("👈 좌측에서 '공급량실적_계획_실적_MJ' 파일을 업로드하세요.")
 
     # 🟢 메인 화면 렌더링
     if not df_final.empty:
+        # 연도 필터링
         with st.sidebar:
             st.markdown("---")
             all_years = sorted(df_final['연'].unique())
-            default_yrs = [y for y in all_years if y <= 2025]
+            default_yrs = [y for y in all_years if y <= 2025] # 기본값은 과거
             if not default_yrs: default_yrs = all_years
             
             st.markdown("**📅 분석 대상 연도**")
             train_years = st.multiselect("연도 선택", all_years, default=default_yrs, label_visibility="collapsed")
             
-            df_final = df_final[df_final['연'].isin(train_years) | (df_final['구분'] == '확정계획')]
-        
-        # 기온 데이터 (가정용 분석용)
-        df_temp = None
-        if "가정용" in func:
-            with st.sidebar:
-                up_t = st.file_uploader("기온 데이터(.csv) 업로드", type=["csv", "xlsx"])
-            df_temp = load_temp_universal(up_t)
+            # 분석용 데이터: 선택된 연도 + 확정계획(공급량인 경우)
+            df_filtered = df_final[df_final['연'].isin(train_years) | (df_final['구분'] == '확정계획')]
 
         if "실적분석" in func:
-            render_analysis(df_final, unit)
-        elif "2035 예측" in func:
+            render_analysis(df_filtered, unit)
+        else:
+            # 공급량 예측은 2029년부터 (2028까지 계획 있으므로)
+            # 판매량 예측은 2026년부터
             start_year = 2029 if mode.startswith("2") else 2026
-            render_prediction(df_final, unit, start_year)
-        elif "가정용" in func:
-            render_household(df_final, df_temp, unit)
+            
+            # 예측할 때는 '선택된 연도(학습용)' + '확정계획'을 모두 합쳐서 학습 데이터로 씀
+            render_prediction(df_filtered, unit, start_year)
 
 if __name__ == "__main__":
     main()
