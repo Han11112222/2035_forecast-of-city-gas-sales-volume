@@ -24,7 +24,7 @@ def set_korean_font():
 set_korean_font()
 
 # ─────────────────────────────────────────────────────────
-# 🟢 2. 용도별 매핑 (형님 지시사항 최종_진짜_최종)
+# 🟢 2. 용도별 매핑 (형님 지시사항 최종 확정)
 # ─────────────────────────────────────────────────────────
 
 # 1) 판매량용 매핑 (기존 유지)
@@ -38,18 +38,18 @@ MAPPING_SALES = {
     "열전용설비용": "열전용설비용"
 }
 
-# 2) 공급량용 매핑 (형님 요청: 영업용 독립 / 일반1+주한미군 -> 업무용)
+# 2) 공급량용 매핑 (최종 수정: 주한미군 -> 업무용 포함)
 MAPPING_SUPPLY_SPECIFIC = {
     # 1. 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", 
     "개별난방": "가정용", "중앙난방": "가정용",
     
-    # 2. 영업용 (형님 요청: 영업용만 단독으로)
+    # 2. 영업용
     "영업용": "영업용",
     
-    # 3. 업무용 (일반1, 일반2, 업무난방, 냉난방, 주한미군 포함)
+    # 3. 업무용 (일반1, 일반2, 업무난방, 냉난방 + 주한미군)
     "일반용(1)": "업무용", "일반용1": "업무용", "일반용1(영업)": "업무용", "일반용1(업무)": "업무용",
-    "일반용(2)": "업무용", "일반용2": "업무용", 
+    "일반용(2)": "업무용", "일반용2": "업무용", "일반용1(업무)": "업무용",
     "업무난방용": "업무용", "냉난방용": "업무용", "냉방용": "업무용", 
     "주한미군": "업무용", 
     
@@ -64,39 +64,30 @@ MAPPING_SUPPLY_SPECIFIC = {
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 파일 로딩 및 전처리
+# 🟢 3. 파일 로딩 및 전처리 (Garbage Cleaning 유지)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_all_sheets(uploaded_file):
     """파일의 모든 시트를 읽어서 딕셔너리로 반환"""
     if uploaded_file is None: return {}
     data_dict = {}
-    
-    # 1. 엑셀 시도
     try:
         excel = pd.ExcelFile(uploaded_file, engine='openpyxl')
         for sheet in excel.sheet_names:
             data_dict[sheet] = excel.parse(sheet)
-        return data_dict
-    except: pass
-    
-    # 2. CSV 시도 (utf-8)
-    uploaded_file.seek(0)
-    try:
-        df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-        data_dict["default"] = df
-        return data_dict
-    except: pass
-    
-    # 3. CSV 시도 (cp949)
-    uploaded_file.seek(0)
-    try:
-        df = pd.read_csv(uploaded_file, encoding='cp949')
-        data_dict["default"] = df
-        return data_dict
-    except: pass
-    
-    return {}
+    except:
+        # CSV인 경우
+        uploaded_file.seek(0)
+        try:
+            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+            data_dict["default"] = df
+        except:
+            uploaded_file.seek(0)
+            try:
+                df = pd.read_csv(uploaded_file, encoding='cp949')
+                data_dict["default"] = df
+            except: pass
+    return data_dict
 
 def clean_df(df):
     if df is None: return pd.DataFrame()
@@ -134,7 +125,7 @@ def make_long_data(df, label, mode='sales'):
     for col in df.columns:
         if col in exclude_cols: continue
         
-        # 값이 0이면 스킵
+        # 값이 0이면 컬럼 자체를 스킵 (그래프 오염 방지)
         val_series = pd.to_numeric(df[col], errors='coerce').fillna(0)
         if val_series.sum() == 0: continue
 
@@ -235,7 +226,21 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     if df_train.empty: st.warning("학습 데이터가 부족합니다."); return
     
     st.markdown("##### 📊 추세 분석 모델 선택")
+    # 🔴 형님 요청: 모델 특징 1~2줄 작성
+    st.markdown("""
+    과거 데이터의 패턴을 분석하여 미래를 전망하는 통계적 기법들입니다. 
+    데이터의 특성(지속 성장, 주기적 변동, 안정화 등)에 가장 적합한 모델을 선택해보세요.
+    """)
+    
     pred_method = st.radio("방법", ["선형 회귀", "2차 곡선", "3차 곡선", "로그 추세", "지수 평활", "CAGR"], horizontal=True)
+    
+    # 모델별 상세 설명 (하단 표시)
+    if "선형" in pred_method: st.info("ℹ️ 매년 일정량씩 꾸준히 변하는 직선 추세")
+    elif "2차" in pred_method: st.info("ℹ️ 성장이 가속화되거나 둔화되는 곡선 추세")
+    elif "3차" in pred_method: st.info("ℹ️ 상승과 하락 사이클이 있는 복잡한 추세")
+    elif "로그" in pred_method: st.info("ℹ️ 초반 급성장 후 점차 안정화되는(성숙기) 패턴")
+    elif "지수" in pred_method: st.info("ℹ️ 최근 실적에 가중치를 두어 최신 트렌드를 민감하게 반영")
+    elif "CAGR" in pred_method: st.info("ℹ️ 과거의 연평균 성장률이 미래에도 유지된다고 가정")
     
     df_grp = long_df.groupby(['연', '그룹', '구분'])['값'].sum().reset_index()
     df_train_grp = df_train.groupby(['연', '그룹'])['값'].sum().reset_index()
@@ -290,7 +295,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
                 total_hist_vals.append({'연': row['연'], '값': row['값']})
                 added_years.add(row['연'])
             
-        # 2. 확정 계획 (공급량 전용, 26~28)
+        # 2. 확정 계획 (공급량 전용)
         if is_supply_mode and start_pred_year == 2029:
             plan_data = sub_full[sub_full['연'].between(2026, 2028)]
             for _, row in plan_data.iterrows():
@@ -299,7 +304,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
                     added_years.add(row['연'])
                 
         # 3. AI 미래 예측
-        for yr, v in zip(future_years.flatten(), pred):
+        for yr, v in zip(future_years.flatten(), pred): 
             if yr not in added_years: 
                 results.append({'연': yr, '그룹': grp, '값': v, '구분': '예측(AI)'})
                 total_pred_vals.append({'연': yr, '값': v})
@@ -331,7 +336,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     
     with st.expander("📋 연도별 상세 데이터 확인"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-        piv['소계'] = piv.sum(axis=1)
+        piv['소계'] = piv.sum(axis=1) 
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
@@ -406,7 +411,14 @@ def main():
         
         idx = 0 
         if mode.startswith("1"): idx = 0 
-        unit = st.radio("단위 선택", ["열량 (GJ)", "부피 (천m³)"], index=idx)
+        
+        # 🔴 [수정] 공급량도 GJ로 변경 요청 반영
+        if mode.startswith("1"): # 판매량
+            unit_opts = ["열량 (GJ)", "부피 (천m³)"]
+        else: # 공급량, 최종값
+            unit_opts = ["열량 (GJ)", "부피 (천m³)"] # MJ -> GJ 변경 완료
+            
+        unit = st.radio("단위 선택", unit_opts, index=idx)
         unit_key = "열량" if "열량" in unit else "부피"
         
         st.markdown("---")
@@ -428,7 +440,6 @@ def main():
             data_dict = load_all_sheets(up_sales[0] if isinstance(up_sales, list) else up_sales)
             
             target_df = None
-            # 1. 시트명에 '실적' 포함여부 확인 (파일명 상관없음)
             for sheet_name, df in data_dict.items():
                 if "실적" in sheet_name and unit_key in sheet_name:
                     target_df = df; break
@@ -437,13 +448,11 @@ def main():
                 for sheet_name, df in data_dict.items():
                     if "실적" in sheet_name: target_df = df; break
             
-            # 없으면 첫번째
             if target_df is None and len(data_dict) > 0:
                 target_df = list(data_dict.values())[0]
 
             if target_df is not None:
                 long_a = make_long_data(target_df, "실적", 'sales')
-                # 2025년 이하만 사용 (과거 실적) -> 2026부터 예측
                 long_a = long_a[long_a['연'] <= 2025] 
                 df_final = pd.concat([long_a], ignore_index=True)
         else: st.info("👈 [판매량 파일]을 업로드하세요."); return
