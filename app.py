@@ -191,7 +191,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면
+# 🟢 5. 예측 화면 (데이터 다운로드 기능 추가됨)
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -336,6 +336,39 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
         piv['소계'] = piv.sum(axis=1) 
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
+
+        # 🟢 [추가된 부분] 데이터 다운로드 버튼
+        if not piv.empty:
+            st.markdown("---")
+            # 1. 학습 기간 메타데이터 텍스트 생성
+            if train_years_selected:
+                sorted_years = sorted(train_years_selected)
+                min_y, max_y = sorted_years[0], sorted_years[-1]
+                
+                # 전체 범위에서 선택되지 않은(제외된) 연도 찾기
+                full_range = set(range(min_y, max_y + 1))
+                excluded = sorted(list(full_range - set(sorted_years)))
+                
+                exclude_str = ""
+                if excluded:
+                    exclude_str = f"(학습제외 연도 {', '.join(map(str, excluded))})"
+                
+                meta_info = f"데이터 학습기간 {min_y}~{max_y}{exclude_str}"
+            else:
+                meta_info = "데이터 학습기간 정보 없음"
+
+            # 2. CSV 버퍼 생성 및 메타데이터 쓰기
+            csv_buffer = io.StringIO()
+            csv_buffer.write(f"{meta_info}\n") # 첫 줄에 기간 정보 기입
+            piv.to_csv(csv_buffer)             # 그 아래 데이터 기입
+            csv_data = csv_buffer.getvalue().encode('utf-8-sig') # 엑셀 한글 깨짐 방지
+
+            st.download_button(
+                label="📥 데이터 다운로드 (Excel/CSV)",
+                data=csv_data,
+                file_name=f"2035_예측결과_{unit_label}.csv",
+                mime="text/csv"
+            )
 
 # ─────────────────────────────────────────────────────────
 # 🟢 6. 기온 분석
