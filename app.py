@@ -611,9 +611,9 @@ def main():
                 
                 render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
 
-                # 🟢 [신규 추가] 기온 분석 그래프 (하단 배치 + 기간 슬라이더 추가)
+                # 🟢 [기온 분석 로직] 멀티셀렉트(버튼) + 2035 확장
                 st.markdown("---")
-                st.subheader("❄️ 동절기(선택 월) 기온 추세 분석")
+                st.subheader("❄️ 동절기(선택 월) 기온 추세 분석 (2035년 예측)")
                 
                 with st.sidebar:
                     up_t_detail = st.file_uploader("기온 파일(.csv/.xlsx) - 하단 그래프용", type=["csv", "xlsx"], key="temp_detail")
@@ -628,19 +628,19 @@ def main():
                         if cols and '연' in df_temp.columns and '월' in df_temp.columns:
                             temp_col = cols[0]
                             
-                            # 🟢 [수정] 컨트롤 영역 배치: 왼쪽(기간 슬라이더) / 오른쪽(월 선택)
                             col_ctrl1, col_ctrl2 = st.columns([1, 1])
                             
                             with col_ctrl1:
-                                st.markdown("##### 📅 기온 분석 기간 설정 (Bar)")
-                                min_y = int(df_temp['연'].min())
-                                max_y = int(df_temp['연'].max())
-                                # 슬라이더 바 추가
-                                sel_yr_range = st.slider(
-                                    "분석할 연도 범위를 드래그하세요",
-                                    min_value=min_y,
-                                    max_value=max_y,
-                                    value=(min_y, max_y)
+                                # 🟢 [수정] 바(Slider) -> 멀티셀렉트(버튼 형태)
+                                st.markdown("##### 📅 기온 분석 학습 연도 설정")
+                                all_years_temp = sorted(df_temp['연'].unique())
+                                # 기본값: 2010년 ~ 현재(최대연도)
+                                default_years_temp = [y for y in all_years_temp if y >= 2010]
+                                
+                                selected_years_temp = st.multiselect(
+                                    "학습에 포함할 연도를 선택하세요 (제외할 연도 제거)",
+                                    options=all_years_temp,
+                                    default=default_years_temp
                                 )
 
                             with col_ctrl2:
@@ -648,41 +648,44 @@ def main():
                                 selected_months = st.multiselect(
                                     "평균을 낼 월을 선택하세요", 
                                     options=list(range(1, 13)), 
-                                    default=[12, 1, 2, 3], # 동절기 기본
+                                    default=[12, 1, 2, 3], 
                                     format_func=lambda x: f"{x}월"
                                 )
                             
-                            # 그래프 그리기
-                            if selected_months:
-                                # 1. 월 필터링
+                            if selected_months and selected_years_temp:
+                                # 1. 데이터 필터링 (월 & 선택한 연도)
                                 df_t_filt = df_temp[df_temp['월'].isin(selected_months)]
-                                # 2. 연도(슬라이더) 필터링
-                                start_y, end_y = sel_yr_range
-                                df_t_filt = df_t_filt[(df_t_filt['연'] >= start_y) & (df_t_filt['연'] <= end_y)]
+                                df_t_filt = df_t_filt[df_t_filt['연'].isin(selected_years_temp)]
                                 
-                                # 3. 연도별 평균 집계
+                                # 2. 연도별 실적 집계
                                 df_t_grp = df_t_filt.groupby('연')[temp_col].mean().reset_index()
                                 
+                                # 3. 그래프 초기화
+                                # 🟢 [수정] 2035년까지 보여주기 위해 제목 수정
                                 fig_temp = px.line(df_t_grp, x='연', y=temp_col, markers=True, 
-                                                   title=f"선택 월({', '.join(map(str, selected_months))}월) & 기간({start_y}~{end_y}) 평균 기온 추세")
-                                fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8))
+                                                   title=f"선택 월({', '.join(map(str, selected_months))}월) 평균 기온 추세 및 2035년 예측")
+                                fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8), name="실측값")
                                 
-                                # 4. 추세선 추가
+                                # 4. 2035년까지 추세선 예측
                                 if len(df_t_grp) > 1:
                                     X = df_t_grp['연'].values.reshape(-1, 1)
                                     y = df_t_grp[temp_col].values
                                     model = LinearRegression()
                                     model.fit(X, y)
-                                    pred_y = model.predict(X)
                                     
-                                    fig_temp.add_trace(go.Scatter(x=df_t_grp['연'], y=pred_y, mode='lines', 
-                                                                  name='추세선(선형)', line=dict(dash='dash', color='red', width=2)))
+                                    # 🟢 [수정] 미래 연도 생성 (최소 선택 연도 ~ 2035년)
+                                    min_y = min(selected_years_temp)
+                                    future_years = np.arange(min_y, 2036).reshape(-1, 1)
+                                    pred_y = model.predict(future_years)
+                                    
+                                    fig_temp.add_trace(go.Scatter(x=future_years.flatten(), y=pred_y, mode='lines', 
+                                                                  name='추세선(2035 예측)', line=dict(dash='dash', color='red', width=2)))
                                 
                                 fig_temp.update_xaxes(dtick=1, tickformat="d")
                                 fig_temp.update_yaxes(title="평균 기온 (℃)")
                                 st.plotly_chart(fig_temp, use_container_width=True)
                             else:
-                                st.info("👈 상단에서 기온을 확인할 월을 선택해주세요.")
+                                st.info("👈 상단에서 연도와 월을 선택해주세요.")
                         else:
                             st.error("기온 데이터에 '날짜'나 '기온' 관련 컬럼이 올바르지 않습니다.")
             else:
