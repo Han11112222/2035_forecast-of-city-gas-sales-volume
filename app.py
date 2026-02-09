@@ -38,37 +38,62 @@ MAPPING_SALES = {
     "열전용설비용": "열전용설비용"
 }
 
-# 2) 공급량용 매핑 (업무용에 주한미군, 일반용1,2 모두 포함)
+# 2) 공급량용 매핑 (기존 유지)
 MAPPING_SUPPLY_SPECIFIC = {
-    # 1. 가정용
     "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용", 
     "개별난방": "가정용", "중앙난방": "가정용",
-    
-    # 2. 영업용
     "영업용": "영업용",
-    
-    # 3. 업무용 (일반1, 일반2, 업무난방, 냉난방 + 주한미군)
     "일반용(1)": "업무용", "일반용1": "업무용", "일반용1(영업)": "업무용", "일반용1(업무)": "업무용",
     "일반용(2)": "업무용", "일반용2": "업무용", 
     "업무난방용": "업무용", "냉난방용": "업무용", "냉방용": "업무용", 
     "주한미군": "업무용", 
-    
-    # 4. 산업용
     "산업용": "산업용",
-    
-    # 5. 수송용
     "수송용(CNG)": "수송용", "CNG": "수송용",
     "수송용(BIO)": "수송용", "BIO": "수송용"
+}
+
+# 🟢 [추가] 3) 상품별 상세 매핑 (형님 요청 사항)
+MAPPING_DETAIL = {
+    # 가정용 (취사용, 개별난방용, 중앙난방용)
+    "취사용": "취사용", 
+    "개별난방용": "개별난방용", "개별난방": "개별난방용",
+    "중앙난방용": "중앙난방용", "중앙난방": "중앙난방용",
     
-    # 나머지는 매핑하지 않고 원래 이름 그대로 사용
+    # 영업용
+    "영업용": "영업용",
+    
+    # 업무용 (일반1, 일반2, 업무난방, 냉난방, 주한미군)
+    "일반용(1)": "일반용(1)", "일반용1": "일반용(1)", "일반용1(영업)": "일반용(1)",
+    "일반용(2)": "일반용(2)", "일반용2": "일반용(2)",
+    "업무난방용": "업무난방용", "업무난방": "업무난방용",
+    "냉난방용": "냉난방용", "냉방용": "냉난방용",
+    "주한미군": "주한미군",
+    
+    # 산업용
+    "산업용": "산업용",
+    
+    # 열병합용
+    "열병합용": "열병합용", "열병합용1": "열병합용",
+    
+    # 연료전지
+    "연료전지": "연료전지", "연료전지용": "연료전지",
+    
+    # 자가열전용
+    "자가열전용": "자가열전용",
+    
+    # 열전용설비용
+    "열전용설비용": "열전용설비용(주택외)", "열전용설비용(주택외)": "열전용설비용(주택외)",
+    
+    # 수송용
+    "수송용(CNG)": "수송용(CNG)", "CNG": "수송용(CNG)",
+    "수송용(BIO)": "수송용(BIO)", "BIO": "수송용(BIO)"
 }
 
 # ─────────────────────────────────────────────────────────
-# 🟢 3. 파일 로딩 및 전처리 (Garbage Cleaning 유지)
+# 🟢 3. 파일 로딩 및 전처리 (수정됨: 상세 모드 지원)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_all_sheets(uploaded_file):
-    """파일의 모든 시트를 읽어서 딕셔너리로 반환"""
     if uploaded_file is None: return {}
     data_dict = {}
     try:
@@ -76,7 +101,6 @@ def load_all_sheets(uploaded_file):
         for sheet in excel.sheet_names:
             data_dict[sheet] = excel.parse(sheet)
     except:
-        # CSV인 경우
         uploaded_file.seek(0)
         try:
             df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
@@ -94,16 +118,14 @@ def clean_df(df):
     df = df.copy()
     df.columns = df.columns.astype(str).str.strip()
     
-    # 1. 불필요한 컬럼 삭제 (Unnamed, 열 1, 열 2, 0 등)
     cols = []
     for c in df.columns:
         if "Unnamed" in c: continue
-        if re.search(r'^열\s*\d+', c): continue # 열 1, 열 2...
+        if re.search(r'^열\s*\d+', c): continue 
         if c == '0': continue
         cols.append(c)
     df = df[cols]
     
-    # 2. 날짜 변환
     if '날짜' in df.columns:
         df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
         if '연' not in df.columns: df['연'] = df['날짜'].dt.year
@@ -125,17 +147,19 @@ def make_long_data(df, label, mode='sales'):
     for col in df.columns:
         if col in exclude_cols: continue
         
-        # 값이 0이면 컬럼 자체를 스킵 (그래프 오염 방지)
         val_series = pd.to_numeric(df[col], errors='coerce').fillna(0)
         if val_series.sum() == 0: continue
 
-        # 그룹 매핑
-        if mode == 'sales':
+        # 🟢 [수정] 모드에 따른 매핑 사전 선택
+        if mode == 'detail':
+            # 상세 상품별 매핑 사용
+            group = MAPPING_DETAIL.get(col)
+            if not group: continue # 목록에 없는 건 제외
+        elif mode == 'sales':
             group = MAPPING_SALES.get(col)
             if not group: continue 
-        else:
+        else: # supply
             if df[col].dtype == object: continue
-            # 공급량: 매핑표에 있으면 쓰고, 없으면 원래 이름 사용
             group = MAPPING_SUPPLY_SPECIFIC.get(col, col)
 
         sub = df[['연', '월']].copy()
@@ -144,7 +168,6 @@ def make_long_data(df, label, mode='sales'):
         sub['구분'] = label
         sub['값'] = val_series
         
-        # 0인 행 제거
         sub = sub[sub['값'] != 0]
         records.append(sub)
         
@@ -157,7 +180,6 @@ def make_long_data(df, label, mode='sales'):
 def render_analysis_dashboard(long_df, unit_label):
     st.subheader(f"📊 실적 분석 ({unit_label})")
     
-    # 실적만 필터링
     df_act = long_df[long_df['구분'].str.contains('실적')].copy()
     if df_act.empty: st.error("실적 데이터 없음"); return
     
@@ -191,7 +213,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면 (데이터 다운로드 기능 추가됨)
+# 🟢 5. 예측 화면
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -337,31 +359,24 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         piv['소계'] = piv.sum(axis=1) 
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
-        # 🟢 [추가된 부분] 데이터 다운로드 버튼
         if not piv.empty:
             st.markdown("---")
-            # 1. 학습 기간 메타데이터 텍스트 생성
             if train_years_selected:
                 sorted_years = sorted(train_years_selected)
                 min_y, max_y = sorted_years[0], sorted_years[-1]
-                
-                # 전체 범위에서 선택되지 않은(제외된) 연도 찾기
                 full_range = set(range(min_y, max_y + 1))
                 excluded = sorted(list(full_range - set(sorted_years)))
-                
                 exclude_str = ""
                 if excluded:
                     exclude_str = f"(학습제외 연도 {', '.join(map(str, excluded))})"
-                
                 meta_info = f"데이터 학습기간 {min_y}~{max_y}{exclude_str}"
             else:
                 meta_info = "데이터 학습기간 정보 없음"
 
-            # 2. CSV 버퍼 생성 및 메타데이터 쓰기
             csv_buffer = io.StringIO()
-            csv_buffer.write(f"{meta_info}\n") # 첫 줄에 기간 정보 기입
-            piv.to_csv(csv_buffer)             # 그 아래 데이터 기입
-            csv_data = csv_buffer.getvalue().encode('utf-8-sig') # 엑셀 한글 깨짐 방지
+            csv_buffer.write(f"{meta_info}\n")
+            piv.to_csv(csv_buffer)
+            csv_data = csv_buffer.getvalue().encode('utf-8-sig')
 
             st.download_button(
                 label="📥 데이터 다운로드 (Excel/CSV)",
@@ -371,10 +386,11 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
             )
 
 # ─────────────────────────────────────────────────────────
-# 🟢 6. 기온 분석
+# 🟢 6. 기온 분석 (이전 함수 유지)
 # ─────────────────────────────────────────────────────────
 def render_household_analysis(long_df, temp_file):
     st.subheader(f"🏠 가정용 정밀 분석 (기온 영향)")
+    # (코드 내용 동일 유지) ... (생략 없이 전체 코드를 드려야 하므로 아래 포함)
     if temp_file is None:
         st.warning("⚠️ 기온 데이터 파일(.csv)을 업로드해주세요."); return
         
@@ -438,12 +454,12 @@ def main():
         
         sub_mode = ""
         if not mode.startswith("3"):
-            sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 가정용 정밀 분석"])
+            # 🟢 [수정] 메뉴 이름 변경: 가정용 정밀 분석 -> 상품별 예측
+            sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 상품별 예측"])
         
         idx = 0 
         if mode.startswith("1"): idx = 0 
         
-        # 🔴 [수정] 공급량도 GJ 단위 기본 (MJ -> GJ 변환 로직 적용)
         if mode.startswith("1"): # 판매량
             unit_opts = ["열량 (GJ)", "부피 (천m³)"]
         else: # 공급량, 최종값
@@ -525,7 +541,7 @@ def main():
 
     # ── 공통 실행 ──
     if not df_final.empty:
-        # 🔴 [단위 변환 로직 적용] 공급량(2) & 최종값(3)에서 GJ 선택시 / 1000
+        # 🔴 [단위 변환 로직 적용]
         if (mode.startswith("2") or mode.startswith("3")) and "GJ" in unit:
             df_final['값'] = df_final['값'] / 1000
 
@@ -542,10 +558,52 @@ def main():
             render_analysis_dashboard(df_final, unit)
         elif "2035" in sub_mode:
             render_prediction_2035(df_final, unit, start_year, train_years, is_supply)
-        elif "가정용" in sub_mode:
-            with st.sidebar:
-                up_t = st.file_uploader("기온 파일(.csv)", type=["csv", "xlsx"])
-            render_household_analysis(df_final, up_t)
+        
+        # 🟢 [수정] 상품별 예측 (상세 분석 모드)
+        elif "상품별" in sub_mode:
+            # 여기서는 상세 매핑을 적용하기 위해 데이터를 다시 로드해서 처리
+            df_detail = pd.DataFrame()
+            if mode.startswith("1") and up_sales:
+                # 판매량 파일 다시 로드
+                dd = load_all_sheets(up_sales[0] if isinstance(up_sales, list) else up_sales)
+                # (위와 동일한 시트 찾기 로직)
+                tgt = None
+                for sn, d in dd.items():
+                    if "실적" in sn and unit_key in sn: tgt = d; break
+                if tgt is None:
+                    for sn, d in dd.items():
+                        if "실적" in sn: tgt = d; break
+                if tgt is not None:
+                    # 핵심: mode='detail'로 호출
+                    df_detail = make_long_data(tgt, "실적", mode='detail')
+                    df_detail = df_detail[df_detail['연'] <= 2025]
+
+            elif mode.startswith("2") and up_supply:
+                # 공급량 파일 다시 로드
+                dd = load_all_sheets(up_supply)
+                dh, dp = None, None
+                for n, d in dd.items():
+                    if "실적" in n: dh = d; break
+                for n, d in dd.items():
+                    if "계획" in n: dp = d; break
+                if dh is None and len(dd)>0: dh = list(dd.values())[0]
+
+                if dh is not None:
+                    ld_h = make_long_data(dh, "실적", mode='detail')
+                    df_detail = ld_h
+                    if dp is not None:
+                        ld_p = make_long_data(dp, "확정계획", mode='detail')
+                        df_detail = pd.concat([ld_h, ld_p], ignore_index=True)
+            
+            if not df_detail.empty:
+                # 단위 변환
+                if (mode.startswith("2")) and "GJ" in unit:
+                    df_detail['값'] = df_detail['값'] / 1000
+                
+                # 기존 2035 예측 함수 재사용 (상세 데이터로)
+                render_prediction_2035(df_detail, unit, start_year, train_years, is_supply)
+            else:
+                st.warning("데이터를 불러올 수 없습니다.")
 
 if __name__ == "__main__":
     main()
