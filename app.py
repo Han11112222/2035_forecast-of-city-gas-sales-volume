@@ -72,7 +72,7 @@ MAPPING_DETAIL = {
     "수송용(BIO)": "수송용(BIO)", "BIO": "수송용(BIO)"
 }
 
-# 🟢 [정렬 순서] 상품별 예측 탭에서만 사용할 순서
+# 🟢 [정렬 순서]
 ORDER_LIST_DETAIL = [
     "취사용", "개별난방용", "중앙난방용",       
     "영업용",                                 
@@ -112,6 +112,13 @@ def load_all_sheets(uploaded_file):
 def clean_df(df):
     if df is None: return pd.DataFrame()
     df = df.copy()
+    
+    # 🟢 [추가] 업로드된 파일의 첫 행이 '데이터 학습기간' 멘트인 경우 처리
+    if len(df.columns) > 0 and isinstance(df.columns[0], str) and "데이터 학습기간" in df.columns[0]:
+        new_header = df.iloc[0] # 2번째 줄을 헤더로
+        df = df[1:] # 데이터는 3번째 줄부터
+        df.columns = new_header
+
     df.columns = df.columns.astype(str).str.strip()
     
     cols = []
@@ -131,12 +138,16 @@ def clean_df(df):
 
 def make_long_data(df, label, mode='sales'):
     df = clean_df(df)
-    if df.empty or '연' not in df.columns or '월' not in df.columns: return pd.DataFrame()
+    if df.empty or '연' not in df.columns: return pd.DataFrame()
     
+    # 월 컬럼이 없으면 연단위 데이터로 간주 (최종값 등)
+    if '월' not in df.columns:
+         df['월'] = 1 
+
     records = []
     df['연'] = pd.to_numeric(df['연'], errors='coerce')
     df['월'] = pd.to_numeric(df['월'], errors='coerce')
-    df = df.dropna(subset=['연', '월'])
+    df = df.dropna(subset=['연'])
     
     exclude_cols = ['연', '월', '날짜', '평균기온', '총공급량', '총합계', '비교(V-W)', '소 계', '소계']
 
@@ -148,7 +159,8 @@ def make_long_data(df, label, mode='sales'):
 
         if mode == 'detail':
             group = MAPPING_DETAIL.get(col)
-            if not group: continue 
+            # 매핑에 없더라도 최종값 확인 시에는 컬럼명 그대로 사용 (누락 방지)
+            if not group: group = col 
         elif mode == 'sales':
             group = MAPPING_SALES.get(col)
             if not group: continue 
@@ -437,26 +449,60 @@ def render_household_analysis(long_df, temp_file):
     else: st.error("기온 컬럼을 찾을 수 없습니다.")
 
 # ─────────────────────────────────────────────────────────
-# 🟢 7. 최종값 확인
+# 🟢 7. 최종값 확인 (수정됨: 2035 예측 스타일 적용)
 # ─────────────────────────────────────────────────────────
 def render_final_check(long_df, unit_label):
     st.subheader(f"🏁 최종 확정 데이터 시각화 ({unit_label})")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"#### 📈 연도별 추세")
-        yr_grp = long_df.groupby(['연', '그룹'])['값'].sum().reset_index()
-        fig1 = px.line(yr_grp, x='연', y='값', color='그룹', markers=True)
-        fig1.update_xaxes(dtick=1, tickformat="d")
-        st.plotly_chart(fig1, use_container_width=True)
-    with col2:
-        st.markdown(f"#### 🧱 용도별 구성비")
-        fig2 = px.bar(yr_grp, x='연', y='값', color='그룹', text_auto='.2s')
-        fig2.update_xaxes(dtick=1, tickformat="d")
-        st.plotly_chart(fig2, use_container_width=True)
-    st.markdown("#### 📋 최종 데이터 상세")
-    piv = long_df.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
-    piv['소계'] = piv.sum(axis=1)
-    st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
+    
+    # 🟢 [수정] 2035 예측과 동일한 레이아웃 적용
+    # 1. 막대 그래프 (추세선 대신 전체 추세를 보는 선 그래프로 통일하여 '구성'과 '추세'를 모두 표현)
+    #    형님이 "1. 막대그래프"라고 하셨지만 2035 예측 구성(선->스택)을 따르므로 Line Chart로 배치 후 Stack Bar 배치
+    
+    # 정렬 적용
+    df_res = long_df.copy()
+    current_groups = df_res['그룹'].unique()
+    valid_order = [g for g in ORDER_LIST_DETAIL if g in current_groups]
+    rest_groups = [g for g in current_groups if g not in valid_order]
+    final_sort_order = valid_order + sorted(rest_groups)
+    
+    df_res['그룹'] = pd.Categorical(df_res['그룹'], categories=final_sort_order, ordered=True)
+    df_res = df_res.sort_values(['연', '그룹'])
+    
+    display_order = {'그룹': final_sort_order}
+    
+    st.markdown("#### 📈 연도별 추세 (Line Chart)")
+    fig = px.line(df_res, x='연', y='값', color='그룹', markers=True, category_orders=display_order)
+    fig.update_xaxes(dtick=1, tickformat="d")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    st.markdown("#### 🧱 연도별 공급량 구성 (Stacked Bar)")
+    fig_stack = px.bar(df_res, x='연', y='값', color='그룹', text_auto='.2s', category_orders=display_order)
+    fig_stack.update_xaxes(dtick=1, tickformat="d")
+    st.plotly_chart(fig_stack, use_container_width=True)
+    
+    with st.expander("📋 최종 데이터 상세 (Click)"):
+        piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
+        
+        cols_in_piv = piv.columns.tolist()
+        sorted_cols = [c for c in final_sort_order if c in cols_in_piv]
+        remaining = [c for c in cols_in_piv if c not in sorted_cols]
+        piv = piv[sorted_cols + remaining]
+            
+        piv['소계'] = piv.sum(axis=1)
+        st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
+        
+        if not piv.empty:
+            st.markdown("---")
+            csv_buffer = io.StringIO()
+            piv.to_csv(csv_buffer)
+            csv_data = csv_buffer.getvalue().encode('utf-8-sig')
+
+            st.download_button(
+                label="📥 최종 데이터 다운로드 (Excel/CSV)",
+                data=csv_data,
+                file_name=f"최종확정데이터_{unit_label}.csv",
+                mime="text/csv"
+            )
 
 # ─────────────────────────────────────────────────────────
 # 🟢 8. 메인 실행
@@ -466,11 +512,15 @@ def main():
     
     with st.sidebar:
         st.header("설정")
-        mode = st.radio("분석 모드", ["1. 판매량", "2. 공급량", "3. 최종값 확인"], index=1)
+        # 🟢 [수정] 3. 최종값 확인 제거
+        mode = st.radio("분석 모드", ["1. 판매량", "2. 공급량"], index=1)
         
         sub_mode = ""
-        if not mode.startswith("3"):
-            sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 상품별 예측"])
+        # 🟢 [수정] 공급량 모드에 4) 최종값 확인 추가
+        if mode.startswith("2"):
+            sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 상품별 예측", "4) 최종값 확인"])
+        elif mode.startswith("1"):
+            sub_mode = st.radio("기능 선택", ["1) 실적분석"])
         
         idx = 0 
         if mode.startswith("1"): idx = 0 
@@ -488,7 +538,8 @@ def main():
         
         up_sales = st.file_uploader("1. 판매량(계획_실적).xlsx", type=["xlsx", "csv"], key="s", accept_multiple_files=True)
         up_supply = st.file_uploader("2. 공급량실적_계획_실적_MJ.xlsx", type=["xlsx", "csv"], key="p")
-        up_final = st.file_uploader("3. 최종값.xlsx", type=["xlsx", "csv"], key="f")
+        # 🟢 [수정] 최종값 파일 업로더
+        up_final = st.file_uploader("3. 최종값.xlsx (결과파일)", type=["xlsx", "csv"], key="f")
         st.markdown("---")
     
     df_final = pd.DataFrame()
@@ -523,52 +574,60 @@ def main():
     elif mode.startswith("2"):
         start_year = 2029 
         is_supply = True
-        if up_supply:
-            data_dict = load_all_sheets(up_supply)
-            
-            df_hist = None
-            for name, df in data_dict.items():
-                if "실적" in name: df_hist = df; break
-            
-            df_plan = None
-            for name, df in data_dict.items():
-                if "계획" in name: df_plan = df; break
-            
-            if df_hist is None and len(data_dict) > 0: df_hist = list(data_dict.values())[0]
-            
-            if df_hist is not None:
-                long_h = make_long_data(df_hist, "실적", 'supply')
-                df_final = long_h
+        
+        # 🟢 [수정] 최종값 확인 모드일 때는 최종값 파일 우선 로드
+        if "최종값" in sub_mode:
+            if up_final:
+                data_dict = load_all_sheets(up_final)
+                if len(data_dict) > 0:
+                    df_raw = list(data_dict.values())[0]
+                    # 상세 매핑 사용 (mode='detail')
+                    df_final = make_long_data(df_raw, "최종값", mode='detail')
+            else:
+                st.info("👈 [최종값 파일]을 업로드하세요."); return
+        else:
+            # 기존 공급량 로직
+            if up_supply:
+                data_dict = load_all_sheets(up_supply)
                 
-                if df_plan is not None:
-                    long_p = make_long_data(df_plan, "확정계획", 'supply')
-                    df_final = pd.concat([long_h, long_p], ignore_index=True)
-        else: st.info("👈 [공급량 파일]을 업로드하세요."); return
-
-    # 🟢 [모드 3] 최종값
-    elif mode.startswith("3"):
-        if up_final:
-            data_dict = load_all_sheets(up_final)
-            if len(data_dict) > 0:
-                df_raw = list(data_dict.values())[0]
-                df_final = make_long_data(df_raw, "최종값", 'supply')
-        else: st.info("👈 [최종값 파일]을 업로드하세요."); return
+                df_hist = None
+                for name, df in data_dict.items():
+                    if "실적" in name: df_hist = df; break
+                
+                df_plan = None
+                for name, df in data_dict.items():
+                    if "계획" in name: df_plan = df; break
+                
+                if df_hist is None and len(data_dict) > 0: df_hist = list(data_dict.values())[0]
+                
+                if df_hist is not None:
+                    long_h = make_long_data(df_hist, "실적", 'supply')
+                    df_final = long_h
+                    
+                    if df_plan is not None:
+                        long_p = make_long_data(df_plan, "확정계획", 'supply')
+                        df_final = pd.concat([long_h, long_p], ignore_index=True)
+            else: st.info("👈 [공급량 파일]을 업로드하세요."); return
 
     # ── 공통 실행 ──
     if not df_final.empty:
         # 🔴 [단위 변환 로직 적용]
-        if (mode.startswith("2") or mode.startswith("3")) and "GJ" in unit:
+        if (mode.startswith("2")) and "GJ" in unit:
+            # 최종값 파일은 이미 GJ 단위일 가능성이 크지만, 일단 로직상 MJ -> GJ 변환을 유지
+            # 만약 최종값 파일이 이미 GJ라면 이 부분은 1/1000이 되어버리니 주의 필요
+            # 형님의 기존 로직을 존중하여 2.공급량 모드면 나누기 적용
             df_final['값'] = df_final['값'] / 1000
 
-        if not mode.startswith("3"):
+        if "최종값" not in sub_mode:
             with st.sidebar:
                 st.markdown("### 📅 데이터 학습 기간 설정")
                 all_years = sorted([int(y) for y in df_final['연'].unique()])
                 default_yrs = all_years 
                 train_years = st.multiselect("학습 연도 (2025년 포함됨)", options=all_years, default=default_yrs)
 
-        if mode.startswith("3"):
+        if "최종값" in sub_mode:
             render_final_check(df_final, unit)
+        
         elif "실적" in sub_mode:
             render_analysis_dashboard(df_final, unit)
         
@@ -576,6 +635,8 @@ def main():
             render_prediction_2035(df_final, unit, start_year, train_years, is_supply, custom_sort_list=None)
         
         elif "상품별" in sub_mode:
+            # (기존 상품별 로직: 파일을 다시 로드해야 함 - 상단에서 df_final은 일반 supply로 로드되었으므로)
+            # 여기서는 편의상 df_final이 supply 모드(일반 매핑)로 되어 있으니 detail 모드로 다시 읽는 로직 유지
             df_detail = pd.DataFrame()
             if mode.startswith("1") and up_sales:
                 dd = load_all_sheets(up_sales[0] if isinstance(up_sales, list) else up_sales)
@@ -611,7 +672,7 @@ def main():
                 
                 render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
 
-                # 🟢 [기온 분석 로직] 멀티셀렉트(버튼) + 2035 확장
+                # 🟢 [기온 분석 로직]
                 st.markdown("---")
                 st.subheader("❄️ 동절기(선택 월) 기온 추세 분석 (2035년 예측)")
                 
@@ -627,22 +688,16 @@ def main():
                         
                         if cols and '연' in df_temp.columns and '월' in df_temp.columns:
                             temp_col = cols[0]
-                            
                             col_ctrl1, col_ctrl2 = st.columns([1, 1])
-                            
                             with col_ctrl1:
-                                # 🟢 [수정] 바(Slider) -> 멀티셀렉트(버튼 형태)
                                 st.markdown("##### 📅 기온 분석 학습 연도 설정")
                                 all_years_temp = sorted(df_temp['연'].unique())
-                                # 기본값: 2010년 ~ 현재(최대연도)
                                 default_years_temp = [y for y in all_years_temp if y >= 2010]
-                                
                                 selected_years_temp = st.multiselect(
                                     "학습에 포함할 연도를 선택하세요 (제외할 연도 제거)",
                                     options=all_years_temp,
                                     default=default_years_temp
                                 )
-
                             with col_ctrl2:
                                 st.markdown("##### 📅 월 선택")
                                 selected_months = st.multiselect(
@@ -653,31 +708,22 @@ def main():
                                 )
                             
                             if selected_months and selected_years_temp:
-                                # 1. 데이터 필터링 (월 & 선택한 연도)
                                 df_t_filt = df_temp[df_temp['월'].isin(selected_months)]
                                 df_t_filt = df_t_filt[df_t_filt['연'].isin(selected_years_temp)]
-                                
-                                # 2. 연도별 실적 집계
                                 df_t_grp = df_t_filt.groupby('연')[temp_col].mean().reset_index()
                                 
-                                # 3. 그래프 초기화
-                                # 🟢 [수정] 2035년까지 보여주기 위해 제목 수정
                                 fig_temp = px.line(df_t_grp, x='연', y=temp_col, markers=True, 
                                                    title=f"선택 월({', '.join(map(str, selected_months))}월) 평균 기온 추세 및 2035년 예측")
                                 fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8), name="실측값")
                                 
-                                # 4. 2035년까지 추세선 예측
                                 if len(df_t_grp) > 1:
                                     X = df_t_grp['연'].values.reshape(-1, 1)
                                     y = df_t_grp[temp_col].values
                                     model = LinearRegression()
                                     model.fit(X, y)
-                                    
-                                    # 🟢 [수정] 미래 연도 생성 (최소 선택 연도 ~ 2035년)
                                     min_y = min(selected_years_temp)
                                     future_years = np.arange(min_y, 2036).reshape(-1, 1)
                                     pred_y = model.predict(future_years)
-                                    
                                     fig_temp.add_trace(go.Scatter(x=future_years.flatten(), y=pred_y, mode='lines', 
                                                                   name='추세선(2035 예측)', line=dict(dash='dash', color='red', width=2)))
                                 
