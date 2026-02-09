@@ -611,7 +611,7 @@ def main():
                 
                 render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
 
-                # 🟢 [신규 추가] '상품별 예측' 맨 하단에 기온 분석 그래프 연동
+                # 🟢 [신규 추가] 기온 분석 그래프 (하단 배치 + 기간 슬라이더 추가)
                 st.markdown("---")
                 st.subheader("❄️ 동절기(선택 월) 기온 추세 분석")
                 
@@ -628,45 +628,61 @@ def main():
                         if cols and '연' in df_temp.columns and '월' in df_temp.columns:
                             temp_col = cols[0]
                             
-                            # 우측에 선택버튼을 위해 컬럼 분할 (그래프 4 : 선택기 1 비율)
-                            col1, col2 = st.columns([4, 1])
-                            with col2:
+                            # 🟢 [수정] 컨트롤 영역 배치: 왼쪽(기간 슬라이더) / 오른쪽(월 선택)
+                            col_ctrl1, col_ctrl2 = st.columns([1, 1])
+                            
+                            with col_ctrl1:
+                                st.markdown("##### 📅 기온 분석 기간 설정 (Bar)")
+                                min_y = int(df_temp['연'].min())
+                                max_y = int(df_temp['연'].max())
+                                # 슬라이더 바 추가
+                                sel_yr_range = st.slider(
+                                    "분석할 연도 범위를 드래그하세요",
+                                    min_value=min_y,
+                                    max_value=max_y,
+                                    value=(min_y, max_y)
+                                )
+
+                            with col_ctrl2:
                                 st.markdown("##### 📅 월 선택")
                                 selected_months = st.multiselect(
                                     "평균을 낼 월을 선택하세요", 
                                     options=list(range(1, 13)), 
-                                    default=[12, 1, 2, 3], # 형님이 말씀하신 12~3월 동절기 기본 세팅!
+                                    default=[12, 1, 2, 3], # 동절기 기본
                                     format_func=lambda x: f"{x}월"
                                 )
                             
-                            with col1:
-                                if selected_months:
-                                    # 1. 선택한 월만 쏙 뽑아내기
-                                    df_t_filt = df_temp[df_temp['월'].isin(selected_months)]
-                                    # 2. 연도별로 묶어서 평균 기온 내기
-                                    df_t_grp = df_t_filt.groupby('연')[temp_col].mean().reset_index()
+                            # 그래프 그리기
+                            if selected_months:
+                                # 1. 월 필터링
+                                df_t_filt = df_temp[df_temp['월'].isin(selected_months)]
+                                # 2. 연도(슬라이더) 필터링
+                                start_y, end_y = sel_yr_range
+                                df_t_filt = df_t_filt[(df_t_filt['연'] >= start_y) & (df_t_filt['연'] <= end_y)]
+                                
+                                # 3. 연도별 평균 집계
+                                df_t_grp = df_t_filt.groupby('연')[temp_col].mean().reset_index()
+                                
+                                fig_temp = px.line(df_t_grp, x='연', y=temp_col, markers=True, 
+                                                   title=f"선택 월({', '.join(map(str, selected_months))}월) & 기간({start_y}~{end_y}) 평균 기온 추세")
+                                fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8))
+                                
+                                # 4. 추세선 추가
+                                if len(df_t_grp) > 1:
+                                    X = df_t_grp['연'].values.reshape(-1, 1)
+                                    y = df_t_grp[temp_col].values
+                                    model = LinearRegression()
+                                    model.fit(X, y)
+                                    pred_y = model.predict(X)
                                     
-                                    # 3. 기본 선 그래프 시원하게 그려주기
-                                    fig_temp = px.line(df_t_grp, x='연', y=temp_col, markers=True, 
-                                                       title=f"선택 월({', '.join(map(str, selected_months))}월) 연도별 평균 기온 추세")
-                                    fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8))
-                                    
-                                    # 4. 스마트하게 추세선(선형) 계산해서 얹어주기! (형님이 쓰시던 LinearRegression 그대로 사용)
-                                    if len(df_t_grp) > 1:
-                                        X = df_t_grp['연'].values.reshape(-1, 1)
-                                        y = df_t_grp[temp_col].values
-                                        model = LinearRegression()
-                                        model.fit(X, y)
-                                        pred_y = model.predict(X)
-                                        
-                                        fig_temp.add_trace(go.Scatter(x=df_t_grp['연'], y=pred_y, mode='lines', 
-                                                                      name='추세선(선형)', line=dict(dash='dash', color='red', width=2)))
-                                    
-                                    fig_temp.update_xaxes(dtick=1, tickformat="d")
-                                    fig_temp.update_yaxes(title="평균 기온 (℃)")
-                                    st.plotly_chart(fig_temp, use_container_width=True)
-                                else:
-                                    st.info("👈 우측에서 기온을 확인할 월을 선택해주세요.")
+                                    fig_temp.add_trace(go.Scatter(x=df_t_grp['연'], y=pred_y, mode='lines', 
+                                                                  name='추세선(선형)', line=dict(dash='dash', color='red', width=2)))
+                                
+                                fig_temp.update_xaxes(dtick=1, tickformat="d")
+                                fig_temp.update_yaxes(title="평균 기온 (℃)")
+                                st.plotly_chart(fig_temp, use_container_width=True)
+                            else:
+                                st.info("👈 상단에서 기온을 확인할 월을 선택해주세요.")
                         else:
                             st.error("기온 데이터에 '날짜'나 '기온' 관련 컬럼이 올바르지 않습니다.")
             else:
