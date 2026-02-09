@@ -207,7 +207,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면 (색상 원상복구 + 정렬 적용)
+# 🟢 5. 예측 화면
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -325,14 +325,10 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         
     df_res = pd.DataFrame(results)
     
-    # 🟢 [데이터 정렬 준비]
-    display_order = {} # 기본: 빈 딕셔너리 (Plotly 기본 정렬 및 색상 사용) -> 2035예측 원상복구용
+    display_order = {} 
     
-    # 상품별 예측일 경우에만! 형님이 지정한 순서 적용
     if custom_sort_list:
         display_order = {'그룹': custom_sort_list}
-        
-        # DataFrame 자체도 정렬
         current_groups = df_res['그룹'].unique()
         valid_order = [g for g in custom_sort_list if g in current_groups]
         rest_groups = [g for g in current_groups if g not in valid_order]
@@ -341,7 +337,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         df_res['그룹'] = pd.Categorical(df_res['그룹'], categories=final_sort_order, ordered=True)
         df_res = df_res.sort_values(['연', '그룹'])
     else:
-        # 2035 예측: 기본 정렬 (연도, 그룹)
         df_res = df_res.sort_values(['연', '그룹'])
     
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
@@ -350,9 +345,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     
-    # 🔴 [색상 수정] color_discrete_map 제거! 
-    # -> Plotly 기본 팔레트가 자동으로 적용되어, 형님이 좋아하던 그 세련된 색상으로 돌아옵니다.
-    # -> category_orders는 '상품별 예측'일 때만 적용되어 순서를 잡아줍니다.
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True, 
                   category_orders=display_order)
     
@@ -375,7 +367,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     with st.expander("📋 연도별 상세 데이터 확인"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
         
-        # 표 컬럼 정렬 (custom_sort_list가 있으면 적용)
         if custom_sort_list:
             cols_in_piv = piv.columns.tolist()
             sorted_cols = [c for c in custom_sort_list if c in cols_in_piv]
@@ -619,6 +610,65 @@ def main():
                     df_detail['값'] = df_detail['값'] / 1000
                 
                 render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
+
+                # 🟢 [신규 추가] '상품별 예측' 맨 하단에 기온 분석 그래프 연동
+                st.markdown("---")
+                st.subheader("❄️ 동절기(선택 월) 기온 추세 분석")
+                
+                with st.sidebar:
+                    up_t_detail = st.file_uploader("기온 파일(.csv/.xlsx) - 하단 그래프용", type=["csv", "xlsx"], key="temp_detail")
+                
+                if up_t_detail:
+                    temp_dict = load_all_sheets(up_t_detail)
+                    if temp_dict:
+                        df_temp = list(temp_dict.values())[0]
+                        df_temp = clean_df(df_temp)
+                        cols = [c for c in df_temp.columns if "기온" in c]
+                        
+                        if cols and '연' in df_temp.columns and '월' in df_temp.columns:
+                            temp_col = cols[0]
+                            
+                            # 우측에 선택버튼을 위해 컬럼 분할 (그래프 4 : 선택기 1 비율)
+                            col1, col2 = st.columns([4, 1])
+                            with col2:
+                                st.markdown("##### 📅 월 선택")
+                                selected_months = st.multiselect(
+                                    "평균을 낼 월을 선택하세요", 
+                                    options=list(range(1, 13)), 
+                                    default=[12, 1, 2, 3], # 형님이 말씀하신 12~3월 동절기 기본 세팅!
+                                    format_func=lambda x: f"{x}월"
+                                )
+                            
+                            with col1:
+                                if selected_months:
+                                    # 1. 선택한 월만 쏙 뽑아내기
+                                    df_t_filt = df_temp[df_temp['월'].isin(selected_months)]
+                                    # 2. 연도별로 묶어서 평균 기온 내기
+                                    df_t_grp = df_t_filt.groupby('연')[temp_col].mean().reset_index()
+                                    
+                                    # 3. 기본 선 그래프 시원하게 그려주기
+                                    fig_temp = px.line(df_t_grp, x='연', y=temp_col, markers=True, 
+                                                       title=f"선택 월({', '.join(map(str, selected_months))}월) 연도별 평균 기온 추세")
+                                    fig_temp.update_traces(line=dict(color='royalblue', width=2), marker=dict(size=8))
+                                    
+                                    # 4. 스마트하게 추세선(선형) 계산해서 얹어주기! (형님이 쓰시던 LinearRegression 그대로 사용)
+                                    if len(df_t_grp) > 1:
+                                        X = df_t_grp['연'].values.reshape(-1, 1)
+                                        y = df_t_grp[temp_col].values
+                                        model = LinearRegression()
+                                        model.fit(X, y)
+                                        pred_y = model.predict(X)
+                                        
+                                        fig_temp.add_trace(go.Scatter(x=df_t_grp['연'], y=pred_y, mode='lines', 
+                                                                      name='추세선(선형)', line=dict(dash='dash', color='red', width=2)))
+                                    
+                                    fig_temp.update_xaxes(dtick=1, tickformat="d")
+                                    fig_temp.update_yaxes(title="평균 기온 (℃)")
+                                    st.plotly_chart(fig_temp, use_container_width=True)
+                                else:
+                                    st.info("👈 우측에서 기온을 확인할 월을 선택해주세요.")
+                        else:
+                            st.error("기온 데이터에 '날짜'나 '기온' 관련 컬럼이 올바르지 않습니다.")
             else:
                 st.warning("데이터를 불러올 수 없습니다.")
 
