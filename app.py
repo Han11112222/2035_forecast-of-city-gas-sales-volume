@@ -85,6 +85,33 @@ ORDER_LIST_DETAIL = [
     "수송용(CNG)", "수송용(BIO)"              
 ]
 
+# 🟢 [추가] 최종값 확인용 그룹핑 매핑 및 순서
+MAPPING_FINAL_GROUP = {
+    # 가정용
+    "취사용": "가정용", "개별난방용": "가정용", "중앙난방용": "가정용",
+    # 영업용
+    "영업용": "영업용",
+    # 업무용
+    "일반용(1)": "업무용", "일반용(2)": "업무용", "업무난방용": "업무용", "냉난방용": "업무용", "주한미군": "업무용",
+    # 산업용
+    "산업용": "산업용",
+    # 열병합용
+    "열병합용": "열병합용",
+    # 연료전지
+    "연료전지": "연료전지",
+    # 자가열전용
+    "자가열전용": "자가열전용",
+    # 열전용설비용
+    "열전용설비용(주택외)": "열전용설비용(주택외)",
+    # 수송용
+    "수송용(CNG)": "수송용", "수송용(BIO)": "수송용"
+}
+
+ORDER_LIST_FINAL_GROUP = [
+    "가정용", "영업용", "업무용", "산업용", "열병합용", 
+    "연료전지", "자가열전용", "열전용설비용(주택외)", "수송용"
+]
+
 # ─────────────────────────────────────────────────────────
 # 🟢 3. 파일 로딩 및 전처리
 # ─────────────────────────────────────────────────────────
@@ -446,14 +473,34 @@ def render_household_analysis(long_df, temp_file):
     else: st.error("기온 컬럼을 찾을 수 없습니다.")
 
 # ─────────────────────────────────────────────────────────
-# 🟢 7. 최종값 확인
+# 🟢 7. 최종값 확인 (수정됨: 용도별 적용 버튼 추가)
 # ─────────────────────────────────────────────────────────
 def render_final_check(long_df, unit_label):
     st.subheader(f"🏁 최종 확정 데이터 시각화 ({unit_label})")
     
+    # 🟢 [추가] 우측 상단 '용도별 적용' 버튼 (Checkbox)
+    col_t1, col_t2 = st.columns([4, 1])
+    with col_t2:
+        apply_usage_group = st.checkbox("☑️ 용도별 적용")
+    
     df_res = long_df.copy()
+    
+    # 🟢 [로직] 버튼 체크 시 -> 그룹핑 및 정렬 기준 변경
+    if apply_usage_group:
+        # 매핑 적용 (매핑되지 않는 항목은 원래 이름 유지)
+        df_res['New_Group'] = df_res['그룹'].map(MAPPING_FINAL_GROUP).fillna(df_res['그룹'])
+        
+        # 그룹별 합계 재계산
+        df_res = df_res.groupby(['연', 'New_Group'])['값'].sum().reset_index()
+        df_res.rename(columns={'New_Group': '그룹'}, inplace=True)
+        
+        target_order = ORDER_LIST_FINAL_GROUP
+    else:
+        target_order = ORDER_LIST_DETAIL
+
+    # 정렬 및 범주형 변환
     current_groups = df_res['그룹'].unique()
-    valid_order = [g for g in ORDER_LIST_DETAIL if g in current_groups]
+    valid_order = [g for g in target_order if g in current_groups]
     rest_groups = [g for g in current_groups if g not in valid_order]
     final_sort_order = valid_order + sorted(rest_groups)
     
@@ -462,16 +509,19 @@ def render_final_check(long_df, unit_label):
     
     display_order = {'그룹': final_sort_order}
     
+    # 1. Line Chart
     st.markdown("#### 📈 연도별 추세 (Line Chart)")
     fig = px.line(df_res, x='연', y='값', color='그룹', markers=True, category_orders=display_order)
     fig.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig, use_container_width=True)
     
+    # 2. Stacked Bar
     st.markdown("#### 🧱 연도별 공급량 구성 (Stacked Bar)")
     fig_stack = px.bar(df_res, x='연', y='값', color='그룹', text_auto='.2s', category_orders=display_order)
     fig_stack.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig_stack, use_container_width=True)
     
+    # 3. Data Table & Download
     with st.expander("📋 최종 데이터 상세 (Click)"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
         
@@ -489,10 +539,11 @@ def render_final_check(long_df, unit_label):
             piv.to_csv(csv_buffer)
             csv_data = csv_buffer.getvalue().encode('utf-8-sig')
 
+            file_prefix = "용도별합산" if apply_usage_group else "상세상품별"
             st.download_button(
                 label="📥 최종 데이터 다운로드 (Excel/CSV)",
                 data=csv_data,
-                file_name=f"최종확정데이터_{unit_label}.csv",
+                file_name=f"최종확정데이터_{file_prefix}_{unit_label}.csv",
                 mime="text/csv"
             )
 
