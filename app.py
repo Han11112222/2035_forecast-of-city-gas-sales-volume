@@ -45,7 +45,7 @@ MAPPING_SUPPLY_SPECIFIC = {
     "영업용": "영업용",
     "일반용(1)": "업무용", "일반용1": "업무용", "일반용1(영업)": "업무용", "일반용1(업무)": "업무용",
     "일반용(2)": "업무용", "일반용2": "업무용", 
-    "업무난방용": "업무용", "냉난방용": "업무용", "냉방용": "업무용", 
+    "업무난방용": "업무난방용", "냉난방용": "업무용", "냉방용": "업무용", 
     "주한미군": "업무용", 
     "산업용": "산업용",
     "수송용(CNG)": "수송용", "CNG": "수송용",
@@ -113,10 +113,9 @@ def clean_df(df):
     if df is None: return pd.DataFrame()
     df = df.copy()
     
-    # 🟢 [추가] 업로드된 파일의 첫 행이 '데이터 학습기간' 멘트인 경우 처리
     if len(df.columns) > 0 and isinstance(df.columns[0], str) and "데이터 학습기간" in df.columns[0]:
-        new_header = df.iloc[0] # 2번째 줄을 헤더로
-        df = df[1:] # 데이터는 3번째 줄부터
+        new_header = df.iloc[0] 
+        df = df[1:] 
         df.columns = new_header
 
     df.columns = df.columns.astype(str).str.strip()
@@ -140,7 +139,6 @@ def make_long_data(df, label, mode='sales'):
     df = clean_df(df)
     if df.empty or '연' not in df.columns: return pd.DataFrame()
     
-    # 월 컬럼이 없으면 연단위 데이터로 간주 (최종값 등)
     if '월' not in df.columns:
          df['월'] = 1 
 
@@ -159,7 +157,6 @@ def make_long_data(df, label, mode='sales'):
 
         if mode == 'detail':
             group = MAPPING_DETAIL.get(col)
-            # 매핑에 없더라도 최종값 확인 시에는 컬럼명 그대로 사용 (누락 방지)
             if not group: group = col 
         elif mode == 'sales':
             group = MAPPING_SALES.get(col)
@@ -449,16 +446,11 @@ def render_household_analysis(long_df, temp_file):
     else: st.error("기온 컬럼을 찾을 수 없습니다.")
 
 # ─────────────────────────────────────────────────────────
-# 🟢 7. 최종값 확인 (수정됨: 2035 예측 스타일 적용)
+# 🟢 7. 최종값 확인
 # ─────────────────────────────────────────────────────────
 def render_final_check(long_df, unit_label):
     st.subheader(f"🏁 최종 확정 데이터 시각화 ({unit_label})")
     
-    # 🟢 [수정] 2035 예측과 동일한 레이아웃 적용
-    # 1. 막대 그래프 (추세선 대신 전체 추세를 보는 선 그래프로 통일하여 '구성'과 '추세'를 모두 표현)
-    #    형님이 "1. 막대그래프"라고 하셨지만 2035 예측 구성(선->스택)을 따르므로 Line Chart로 배치 후 Stack Bar 배치
-    
-    # 정렬 적용
     df_res = long_df.copy()
     current_groups = df_res['그룹'].unique()
     valid_order = [g for g in ORDER_LIST_DETAIL if g in current_groups]
@@ -512,11 +504,9 @@ def main():
     
     with st.sidebar:
         st.header("설정")
-        # 🟢 [수정] 3. 최종값 확인 제거
         mode = st.radio("분석 모드", ["1. 판매량", "2. 공급량"], index=1)
         
         sub_mode = ""
-        # 🟢 [수정] 공급량 모드에 4) 최종값 확인 추가
         if mode.startswith("2"):
             sub_mode = st.radio("기능 선택", ["1) 실적분석", "2) 2035 예측", "3) 상품별 예측", "4) 최종값 확인"])
         elif mode.startswith("1"):
@@ -538,7 +528,6 @@ def main():
         
         up_sales = st.file_uploader("1. 판매량(계획_실적).xlsx", type=["xlsx", "csv"], key="s", accept_multiple_files=True)
         up_supply = st.file_uploader("2. 공급량실적_계획_실적_MJ.xlsx", type=["xlsx", "csv"], key="p")
-        # 🟢 [수정] 최종값 파일 업로더
         up_final = st.file_uploader("3. 최종값.xlsx (결과파일)", type=["xlsx", "csv"], key="f")
         st.markdown("---")
     
@@ -575,18 +564,15 @@ def main():
         start_year = 2029 
         is_supply = True
         
-        # 🟢 [수정] 최종값 확인 모드일 때는 최종값 파일 우선 로드
         if "최종값" in sub_mode:
             if up_final:
                 data_dict = load_all_sheets(up_final)
                 if len(data_dict) > 0:
                     df_raw = list(data_dict.values())[0]
-                    # 상세 매핑 사용 (mode='detail')
                     df_final = make_long_data(df_raw, "최종값", mode='detail')
             else:
                 st.info("👈 [최종값 파일]을 업로드하세요."); return
         else:
-            # 기존 공급량 로직
             if up_supply:
                 data_dict = load_all_sheets(up_supply)
                 
@@ -612,11 +598,9 @@ def main():
     # ── 공통 실행 ──
     if not df_final.empty:
         # 🔴 [단위 변환 로직 적용]
-        if (mode.startswith("2")) and "GJ" in unit:
-            # 최종값 파일은 이미 GJ 단위일 가능성이 크지만, 일단 로직상 MJ -> GJ 변환을 유지
-            # 만약 최종값 파일이 이미 GJ라면 이 부분은 1/1000이 되어버리니 주의 필요
-            # 형님의 기존 로직을 존중하여 2.공급량 모드면 나누기 적용
-            df_final['값'] = df_final['값'] / 1000
+        if (mode.startswith("2") or mode.startswith("3")) and "GJ" in unit:
+            if "최종값" not in sub_mode: 
+                df_final['값'] = df_final['값'] / 1000
 
         if "최종값" not in sub_mode:
             with st.sidebar:
@@ -635,8 +619,6 @@ def main():
             render_prediction_2035(df_final, unit, start_year, train_years, is_supply, custom_sort_list=None)
         
         elif "상품별" in sub_mode:
-            # (기존 상품별 로직: 파일을 다시 로드해야 함 - 상단에서 df_final은 일반 supply로 로드되었으므로)
-            # 여기서는 편의상 df_final이 supply 모드(일반 매핑)로 되어 있으니 detail 모드로 다시 읽는 로직 유지
             df_detail = pd.DataFrame()
             if mode.startswith("1") and up_sales:
                 dd = load_all_sheets(up_sales[0] if isinstance(up_sales, list) else up_sales)
