@@ -207,7 +207,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면 (색상 고정 + 정렬 적용)
+# 🟢 5. 예측 화면 (색상 원상복구 + 정렬 적용)
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -325,25 +325,23 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         
     df_res = pd.DataFrame(results)
     
-    # 🟢 [미미 솔루션] 색상 맵 고정 (기본 컬러 적용)
-    # 정렬 순서와 상관없이, 그룹의 고유 색상을 Plotly 기본 팔레트(알파벳순 할당)로 고정합니다.
-    # 이렇게 하면 형님이 지정한 순서대로 정렬하더라도 색상이 뒤죽박죽 섞이지 않고 세련된 초기 색상을 유지합니다.
-    all_groups_alpha = sorted(df_res['그룹'].unique()) # 알파벳순 (기본 컬러 할당 순서)
-    colors = px.colors.qualitative.Plotly
-    color_map = {}
-    for i, grp in enumerate(all_groups_alpha):
-        color_map[grp] = colors[i % len(colors)]
-
-    # 🟢 [데이터 정렬] 그래프에 표시될 순서는 형님이 정해주신 custom_sort_list를 따름
-    display_order = {}
+    # 🟢 [데이터 정렬 준비]
+    display_order = {} # 기본: 빈 딕셔너리 (Plotly 기본 정렬 및 색상 사용) -> 2035예측 원상복구용
+    
+    # 상품별 예측일 경우에만! 형님이 지정한 순서 적용
     if custom_sort_list:
         display_order = {'그룹': custom_sort_list}
-        # DataFrame 자체도 정렬 (선 그래프 순서 보장)
+        
+        # DataFrame 자체도 정렬
         current_groups = df_res['그룹'].unique()
         valid_order = [g for g in custom_sort_list if g in current_groups]
         rest_groups = [g for g in current_groups if g not in valid_order]
         final_sort_order = valid_order + sorted(rest_groups)
+        
         df_res['그룹'] = pd.Categorical(df_res['그룹'], categories=final_sort_order, ordered=True)
+        df_res = df_res.sort_values(['연', '그룹'])
+    else:
+        # 2035 예측: 기본 정렬 (연도, 그룹)
         df_res = df_res.sort_values(['연', '그룹'])
     
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
@@ -352,9 +350,11 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     
-    # category_orders: 보여주는 순서 제어 / color_discrete_map: 색상 제어 (분리!)
+    # 🔴 [색상 수정] color_discrete_map 제거! 
+    # -> Plotly 기본 팔레트가 자동으로 적용되어, 형님이 좋아하던 그 세련된 색상으로 돌아옵니다.
+    # -> category_orders는 '상품별 예측'일 때만 적용되어 순서를 잡아줍니다.
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True, 
-                  color_discrete_map=color_map, category_orders=display_order)
+                  category_orders=display_order)
     
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green")
     fig.add_vrect(x0=start_pred_year-0.5, x1=2035.5, fillcolor="green", opacity=0.05, annotation_text="예측 값", annotation_position="inside top")
@@ -368,7 +368,7 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("---")
     st.markdown("#### 🧱 연도별 공급량 구성 (누적 스택)")
     fig_stack = px.bar(df_res, x='연', y='값', color='그룹', title="연도별 용도 구성비", text_auto='.2s',
-                       color_discrete_map=color_map, category_orders=display_order)
+                       category_orders=display_order)
     fig_stack.update_xaxes(dtick=1, tickformat="d")
     st.plotly_chart(fig_stack, use_container_width=True)
     
@@ -582,7 +582,6 @@ def main():
             render_analysis_dashboard(df_final, unit)
         
         elif "2035" in sub_mode:
-            # 🟢 [수정] 2035 예측(기본) -> 순서도, 색상도 기본값(None)으로 호출하여 원상복구
             render_prediction_2035(df_final, unit, start_year, train_years, is_supply, custom_sort_list=None)
         
         elif "상품별" in sub_mode:
@@ -619,7 +618,6 @@ def main():
                 if (mode.startswith("2")) and "GJ" in unit:
                     df_detail['값'] = df_detail['값'] / 1000
                 
-                # 🟢 [수정] 상품별 예측 -> ORDER_LIST_DETAIL을 넘겨서 순서는 커스텀하되, 색상은 기본 로직을 따르도록 함
                 render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
             else:
                 st.warning("데이터를 불러올 수 없습니다.")
