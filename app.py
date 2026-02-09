@@ -52,7 +52,7 @@ MAPPING_SUPPLY_SPECIFIC = {
     "수송용(BIO)": "수송용", "BIO": "수송용"
 }
 
-# 3) 상품별 상세 매핑 (형님 요청 사항)
+# 3) 상품별 상세 매핑
 MAPPING_DETAIL = {
     "취사용": "취사용", 
     "개별난방용": "개별난방용", "개별난방": "개별난방용",
@@ -72,7 +72,7 @@ MAPPING_DETAIL = {
     "수송용(BIO)": "수송용(BIO)", "BIO": "수송용(BIO)"
 }
 
-# 🟢 [정렬 순서] 형님이 지정하신 순서 고정
+# 🟢 [정렬 순서] 상품별 예측 탭에서만 사용할 순서
 ORDER_LIST_DETAIL = [
     "취사용", "개별난방용", "중앙난방용",       
     "영업용",                                 
@@ -207,7 +207,7 @@ def render_analysis_dashboard(long_df, unit_label):
     st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────
-# 🟢 5. 예측 화면
+# 🟢 5. 예측 화면 (수정: 정렬 목록 파라미터 추가)
 # ─────────────────────────────────────────────────────────
 def generate_trend_insight(hist_df, pred_df):
     if hist_df.empty or pred_df.empty: return ""
@@ -229,7 +229,8 @@ def generate_trend_insight(hist_df, pred_df):
     insight = f"💡 **[AI 분석]** 과거 데이터를 분석한 결과, **{int(max_up_year) if max_up_year else '-'}년의 상승**과 **{int(max_down_year) if max_down_year else '-'}년의 하락/조정**을 종합하여 볼 때, 향후 2035년까지는 **{trend_str}**가 유지될 것으로 전망됩니다."
     return insight
 
-def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected, is_supply_mode):
+# 🟢 [수정] custom_sort_list 파라미터 추가 (기본값 None)
+def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_selected, is_supply_mode, custom_sort_list=None):
     st.subheader(f"🔮 2035 장기 예측 ({unit_label})")
     
     filter_cond = long_df['연'].isin(train_years_selected)
@@ -325,15 +326,19 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
         
     df_res = pd.DataFrame(results)
     
-    # 🟢 [데이터 정렬] 데이터 자체를 형님이 지정한 순서대로 정렬
-    # 이렇게 하면 그래프와 표가 이 순서를 따르게 됨 (색상은 기본 설정 유지)
-    current_groups = df_res['그룹'].unique()
-    valid_order = [g for g in ORDER_LIST_DETAIL if g in current_groups]
-    rest_groups = [g for g in current_groups if g not in valid_order]
-    final_order = valid_order + sorted(rest_groups)
-    
-    df_res['그룹'] = pd.Categorical(df_res['그룹'], categories=final_order, ordered=True)
-    df_res = df_res.sort_values(['연', '그룹'])
+    # 🟢 [분기 처리] 정렬 리스트가 있을 때만(상품별 예측) 정렬 로직 적용
+    # 리스트가 없으면(기본 2035 예측) 예전 그대로 둠 -> 색상/순서 원상복구
+    if custom_sort_list:
+        current_groups = df_res['그룹'].unique()
+        valid_order = [g for g in custom_sort_list if g in current_groups]
+        rest_groups = [g for g in current_groups if g not in valid_order]
+        final_order = valid_order + sorted(rest_groups)
+        
+        df_res['그룹'] = pd.Categorical(df_res['그룹'], categories=final_order, ordered=True)
+        df_res = df_res.sort_values(['연', '그룹'])
+    else:
+        # 기본 모드일 때는 그냥 연도/그룹별 단순 정렬 (Plotly 기본 순서 따름)
+        df_res = df_res.sort_values(['연', '그룹'])
     
     insight_text = generate_trend_insight(pd.DataFrame(total_hist_vals), pd.DataFrame(total_pred_vals))
     if insight_text: st.success(insight_text)
@@ -341,7 +346,6 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     st.markdown("---")
     st.markdown("#### 📈 전체 장기 전망 (추세선)")
     
-    # 🟢 [색상 설정 유지] category_orders를 제거하여 Plotly 기본 색상 로직을 따르되, 데이터는 정렬된 상태로 전달
     fig = px.line(df_res, x='연', y='값', color='그룹', line_dash='구분', markers=True)
     
     fig.add_vline(x=start_pred_year-0.5, line_dash="dash", line_color="green")
@@ -362,11 +366,15 @@ def render_prediction_2035(long_df, unit_label, start_pred_year, train_years_sel
     with st.expander("📋 연도별 상세 데이터 확인"):
         piv = df_res.pivot_table(index='연', columns='그룹', values='값', aggfunc='sum').fillna(0)
         
-        # 🟢 [표 순서 고정] 형님이 지정한 순서대로 컬럼 강제 재배치
-        # (DataFrame의 Categorical 정렬이 pivot_table에도 반영되지만, 혹시 몰라 한 번 더 확실하게 처리)
-        existing_cols = [c for c in final_order if c in piv.columns]
-        piv = piv[existing_cols] 
-        
+        # 🟢 [분기 처리] 표 컬럼 정렬도 리스트가 있을 때만 적용
+        if custom_sort_list:
+            # pivot_table은 Categorical 순서를 따르긴 하지만 안전장치로 한 번 더
+            cols_in_piv = piv.columns.tolist()
+            # custom_sort_list에 있는 것 먼저, 나머지는 뒤에
+            sorted_cols = [c for c in custom_sort_list if c in cols_in_piv]
+            remaining = [c for c in cols_in_piv if c not in sorted_cols]
+            piv = piv[sorted_cols + remaining]
+            
         piv['소계'] = piv.sum(axis=1) 
         st.dataframe(piv.style.format("{:,.0f}"), use_container_width=True)
 
@@ -565,10 +573,12 @@ def main():
             render_final_check(df_final, unit)
         elif "실적" in sub_mode:
             render_analysis_dashboard(df_final, unit)
-        elif "2035" in sub_mode:
-            render_prediction_2035(df_final, unit, start_year, train_years, is_supply)
         
-        # 🟢 상품별 예측 (상세 분석 모드)
+        elif "2035" in sub_mode:
+            # 🟢 [수정] 2035 예측(기본) -> custom_sort_list 없이 호출 (None)
+            # 이러면 예전 순서 & 색상 그대로 나옵니다!
+            render_prediction_2035(df_final, unit, start_year, train_years, is_supply, custom_sort_list=None)
+        
         elif "상품별" in sub_mode:
             df_detail = pd.DataFrame()
             if mode.startswith("1") and up_sales:
@@ -603,7 +613,8 @@ def main():
                 if (mode.startswith("2")) and "GJ" in unit:
                     df_detail['값'] = df_detail['값'] / 1000
                 
-                render_prediction_2035(df_detail, unit, start_year, train_years, is_supply)
+                # 🟢 [수정] 상품별 예측 -> ORDER_LIST_DETAIL 전달하여 정렬 적용
+                render_prediction_2035(df_detail, unit, start_year, train_years, is_supply, custom_sort_list=ORDER_LIST_DETAIL)
             else:
                 st.warning("데이터를 불러올 수 없습니다.")
 
