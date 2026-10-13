@@ -422,11 +422,11 @@ def load_daily_temp(data: bytes):
 
 @st.cache_data(show_spinner=False)
 def load_household_monthly(data: bytes):
-    """공급량 실적 시트에서 가정용(취사+개별난방+중앙난방+자가열전용) 월 공급량 [GJ]"""
+    """공급량 실적 시트에서 취사/개별난방(취사용+개별난방용) 월 공급량 [GJ]"""
     x = pd.ExcelFile(io.BytesIO(data))
     sh = next((s for s in x.sheet_names if "실적" in s), x.sheet_names[0])
     df = x.parse(sh)
-    need = ["취사용", "개별난방용", "중앙난방용", "자가열전용"]
+    need = ["취사용", "개별난방용"]
     miss = [c for c in need + ["연", "월"] if c not in df.columns]
     if miss:
         raise ValueError(f"공급량 실적 시트에 {miss} 컬럼이 없습니다")
@@ -518,14 +518,15 @@ def season_total(calib, temp_df, ref_years, shift):
     return calib["a"] * n + calib["b"] * hdd
 
 
-def simulate_household(v5, v6, c6, years, calib, temp_df, ref_years, p):
-    """2035(기준연도) 값에서 출발해 연도별 가정용 물량 산정"""
+def simulate_household(v5, v6, years, calib, temp_df, ref_years, p):
+    """기준연도(2035) 값에서 출발해 연도별 물량 산정
+       취사/개별난방 = V × Π(1+신규유입 증가율) × 기온 효과
+       중집난방      = 취사/개별난방과 같은 증감 비율(기준연도 대비)을 그대로 적용"""
     base = season_total(calib, temp_df, ref_years, p["dT0"])
     G = 1.0
     rows = []
     for Y in years:
-        n = Y - p["base_year"]
-        d = p["rate"] * n
+        d = p["rate"] * (Y - p["base_year"])
         R = season_total(calib, temp_df, ref_years, p["dT0"] + d) / base
         pos = (Y - p["boom_start"]) % p["cycle"]
         boom = (Y >= p["boom_start"]) and pos < p["boom_len"]
@@ -534,21 +535,16 @@ def simulate_household(v5, v6, c6, years, calib, temp_df, ref_years, p):
         else:
             g = p["g_non"]
         G *= 1 + g / 100.0
-        cen = (1 + c6) ** n
-        Gc = G if p["g_central"] else 1.0
         rows.append(dict(연=Y, 기온상승=d, 활황=boom, 신규유입=g, G=G, R=R,
-                         v5=v5 * G * R, v6=v6 * cen * Gc * R,
-                         v5_nw=v5 * G, v6_nw=v6 * cen * Gc,                 # 기온 상승 없음
-                         v5_ng=v5 * R, v6_ng=v6 * cen * R))                  # 신규유입 효과 없음(G=1)
-    df = pd.DataFrame(rows).set_index("연")
-    df["hh"] = df["v5"] + df["v6"]
-    df["hh_nw"] = df["v5_nw"] + df["v6_nw"]
-    df["hh_ng"] = df["v5_ng"] + df["v6_ng"]
-    return df
+                         v5=v5 * G * R, v6=v6 * G * R,
+                         v5_nw=v5 * G,        # 기온 상승 없음 (신규유입만)
+                         v5_ng=v5 * R))       # 신규유입 없음 (기온만)
+    return pd.DataFrame(rows).set_index("연")
 
 
 def render_household_section(layout, hist, hy, labels, base_end, y0):
-    """화면 최상단: 가정용 기온 시뮬레이션. 반환: {apply, rows{엑셀행: Series}, notes[[항목,내용]]}"""
+    """화면 최상단: 가정용(취사/개별난방) 기온 시뮬레이션. 중집난방은 같은 증감 비율을 따라감.
+       반환: {apply, rows{엑셀행: Series}, notes[[항목,내용]]}"""
     out = {"apply": False, "rows": {}, "notes": []}
     st.subheader("🌡️ 가정용 기온 시뮬레이션 적용")
     r5, r6 = _household_rows(layout)
@@ -564,17 +560,17 @@ def render_household_section(layout, hist, hy, labels, base_end, y0):
         apply = st.toggle("✅ 가정용 확정 → 아래 전체 추정에 반영", value=True, key="hh_apply",
                           help="끄면 가정용도 다른 용도처럼 선택한 추세 모델로 계산합니다.")
     st.info(f"**(연평균 기온 {rate:g}도 상승 가정)**  일 기온 → 난방도일 → 공급량 관계를 실적으로 적합해 기온 효과를 계산하고, "
-            f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {base_end + 1}~{TARGET_END}년 가정용 물량을 산정합니다. "
-            f"출발점은 {base_end}년 계획값입니다.")
+            f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {base_end + 1}~{TARGET_END}년 **취사/개별난방** 물량을 산정합니다. "
+            f"출발점은 {base_end}년 계획값이며, **중집난방은 취사/개별난방과 같은 증감 비율**을 따라갑니다.")
 
     # ── 데이터 ──
     temp_b, sup_b = _read_repo_bytes(HH_TEMP_FILE), _read_repo_bytes(HH_SUPPLY_FILE)
     with st.expander("📂 기온·공급량 데이터 (기본: 저장소 파일 사용)", expanded=temp_b is None or sup_b is None):
         u_t = st.file_uploader("일 평균기온 엑셀 (기온_198001_202512.xlsx)", type=["xlsx"], key="hh_up_t")
-        u_s = st.file_uploader("가정용 월별 공급량 실적 엑셀 (공급량실적_계획_실적_MJ.xlsx)", type=["xlsx"], key="hh_up_s")
+        u_s = st.file_uploader("월별 공급량 실적 엑셀 (공급량실적_계획_실적_MJ.xlsx, 취사용·개별난방용 열 사용)", type=["xlsx"], key="hh_up_s")
         u_d = st.file_uploader("(선택) 일별 기온-공급량 시트 내보내기 (일자·공급량(MJ)·평균기온, csv/xlsx)",
                                type=["xlsx", "csv"], key="hh_up_d",
-                               help="구글 시트를 CSV/엑셀로 내려받아 올리면 일 단위 관계로 보정할 수 있습니다. 공급량 열이 가정용 기준이어야 합니다.")
+                               help="구글 시트를 CSV/엑셀로 내려받아 올리면 일 단위 관계로 보정할 수 있습니다. 공급량 열이 취사/개별난방(가정용) 기준이어야 합니다.")
     temp_b = u_t.getvalue() if u_t is not None else temp_b
     sup_b = u_s.getvalue() if u_s is not None else sup_b
     try:
@@ -615,8 +611,6 @@ def render_household_section(layout, hist, hy, labels, base_end, y0):
 
     # ── 시나리오 가정 ──
     v5, v6 = float(hist.loc[r5, base_end]), float(hist.loc[r6, base_end])
-    y29 = 2029 if 2029 in hist.columns and not np.isnan(hist.loc[r6, 2029]) else None
-    c6_plan = (v6 / float(hist.loc[r6, y29])) ** (1 / (base_end - y29)) - 1 if y29 and hist.loc[r6, y29] > 0 else 0.0
     full_y = _full_years(temp_df)
     with st.expander("⚙️ 시나리오 가정 (공동주택 신규유입 · 기준 기온)", expanded=False):
         a1, a2, a3 = st.columns(3)
@@ -634,48 +628,43 @@ def render_household_section(layout, hist, hy, labels, base_end, y0):
             n_ref = st.slider("평년 산정 기간 (최근 N년)", 5, min(30, len(full_y)), min(10, len(full_y)), key="hh_ref")
             dT0 = st.number_input(f"{base_end}년 계획이 전제한 기온 (평년 대비 ℃)", -2.0, 3.0, 0.0, 0.1, format="%.1f", key="hh_dt0",
                                   help="0 = 계획 기준연도가 평년 기온이라고 봅니다. 연평균 상승은 이 기온에서 출발해 매년 더해집니다.")
-            g_central = st.checkbox("중집난방에도 신규유입 효과 적용", value=False, key="hh_gc",
-                                    help="중앙난방은 신규 공급이 거의 없어 기본은 미적용입니다.")
-            c6_on = st.checkbox(f"중집난방 구조 추세 유지 ({c6_plan:+.1%}/년, 계획 2029~{base_end})", value=True, key="hh_c6")
-    c6 = c6_plan if c6_on else 0.0
     ref_years = full_y[-n_ref:]
     p = dict(rate=rate, dT0=dT0, base_year=base_end, boom_start=int(boom_start), boom_len=int(boom_len),
-             cycle=int(cycle), g_start=g_start, g_end=g_end, g_non=g_non, g_central=g_central)
+             cycle=int(cycle), g_start=g_start, g_end=g_end, g_non=g_non)
     years = list(range(base_end + 1, TARGET_END + 1))
-    sim = simulate_household(v5, v6, c6, years, calib, temp_df, ref_years, p)
+    sim = simulate_household(v5, v6, years, calib, temp_df, ref_years, p)
 
     # ── 근거 요약 ──
     s01 = season_total(calib, temp_df, ref_years, dT0 + 0.1) / season_total(calib, temp_df, ref_years, dT0) - 1
     s10 = season_total(calib, temp_df, ref_years, dT0 + 1.0) / season_total(calib, temp_df, ref_years, dT0) - 1
-    kk = calib["k"]
-    kk5 = kk.iloc[-5:]
+    kk5 = calib["k"].iloc[-5:]
     k_slope = np.polyfit(kk5.index.values, np.log(kk5.values), 1)[0] if len(kk5) >= 3 else np.nan
     per = "월" if calib["level"] == "월" else "일"
     st.markdown(
-        f"**적합 결과** · {per} 공급량 ~ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
+        f"**적합 결과** · 취사/개별난방 {per} 공급량 ~ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
         f"기온 +0.1℃ → **{s01:+.2%}**, +1℃ → **{s10:+.1%}** (연간 물량, 평년 {ref_years[0]}~{ref_years[-1]} 기준)")
     if not np.isnan(k_slope):
-        st.caption(f"참고(실적): 기온을 보정한 가정용 물량 추세는 {kk5.index[0]}~{kk5.index[-1]}년 연평균 {np.exp(k_slope) - 1:+.1%}입니다. "
+        st.caption(f"참고(실적): 기온을 보정한 취사/개별난방 물량 추세는 {kk5.index[0]}~{kk5.index[-1]}년 연평균 {np.exp(k_slope) - 1:+.1%}입니다. "
                    f"활황기·비활황기 증가율은 실적에서 추정한 값이 아니라 **시나리오 가정**입니다.")
 
-    # ── 결과 요약 ──
-    hh_base = v5 + v6
+    # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) ──
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"{base_end}년 가정용", f"{hh_base:,.0f}")
-    k2.metric("2040년", f"{sim.loc[2040, 'hh']:,.0f}", f"{sim.loc[2040, 'hh'] / hh_base - 1:+.1%}")
-    k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'hh']:,.0f}", f"{sim.loc[TARGET_END, 'hh'] / hh_base - 1:+.1%}")
+    k1.metric(f"{base_end}년 취사/개별난방", f"{v5:,.0f}")
+    k2.metric("2040년", f"{sim.loc[2040, 'v5']:,.0f}", f"{sim.loc[2040, 'v5'] / v5 - 1:+.1%}")
+    k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'v5']:,.0f}", f"{sim.loc[TARGET_END, 'v5'] / v5 - 1:+.1%}")
     k4.metric(f"{TARGET_END}년 기온 효과 / 신규유입 효과",
               f"{sim.loc[TARGET_END, 'R'] - 1:+.1%} / {sim.loc[TARGET_END, 'G'] - 1:+.1%}")
 
-    hist_hh = (hist.loc[r5, hy] + hist.loc[r6, hy]).astype(float)
+    hist5 = hist.loc[r5, hy].astype(float)
     M = 1e6
     figA = go.Figure()
-    figA.add_trace(go.Scatter(x=hist_hh.index, y=hist_hh.values / M, mode="lines+markers", name="계획/실적",
+    figA.add_trace(go.Scatter(x=hist5.index, y=hist5.values / M, mode="lines+markers", name="계획/실적",
                               line=dict(color="gray", width=3)))
-    for col, nm, colr, dash, w in (("hh_nw", "기온 상승 없음 (신규유입만)", "#2ca02c", "dot", 2),
-                                   ("hh_ng", "신규유입 없음 (기온만)", "#ff7f0e", "dot", 2),
-                                   ("hh", "★ 가정용 시뮬레이션 (확정안)", "royalblue", "solid", 4)):
-        figA.add_trace(go.Scatter(x=[base_end] + years, y=[hh_base / M] + list(sim[col].values / M), mode="lines+markers" if col == "hh" else "lines",
+    for col, nm, colr, dash, w in (("v5_nw", "기온 상승 없음 (신규유입만)", "#2ca02c", "dot", 2),
+                                   ("v5_ng", "신규유입 없음 (기온만)", "#ff7f0e", "dot", 2),
+                                   ("v5", "★ 시뮬레이션 (확정안)", "royalblue", "solid", 4)):
+        figA.add_trace(go.Scatter(x=[base_end] + years, y=[v5 / M] + list(sim[col].values / M),
+                                  mode="lines+markers" if col == "v5" else "lines",
                                   name=nm, line=dict(color=colr, width=w, dash=dash),
                                   hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
     figA.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
@@ -683,42 +672,44 @@ def render_household_section(layout, hist, hy, labels, base_end, y0):
     figA.update_xaxes(dtick=2, tickformat="d")
     figA.update_yaxes(title="백만 GJ", tickformat=",.1f")
     if y0:
-        figA.update_yaxes(range=[0, max(hist_hh.max(), sim["hh"].max()) / M * 1.15])
-    figA.update_layout(height=400, margin=dict(t=20), legend=dict(orientation="h", y=-0.22),
-                       title=dict(text="가정용 물량 (취사/개별난방 + 중집난방)", font=dict(size=15)))
+        figA.update_yaxes(range=[0, max(hist5.max(), sim["v5"].max(), sim["v5_nw"].max()) / M * 1.15])
+    figA.update_layout(height=430, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
+                       title=dict(text="취사/개별난방 물량 (중집난방 제외)", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     figB = go.Figure()
-    for col, nm, colr, w in (("hh", "합계 변화율", "royalblue", 4), ("R", "기온 효과", "#ff7f0e", 2), ("G", "신규유입 효과", "#2ca02c", 2)):
-        yv = (sim[col] / hh_base - 1) * 100 if col == "hh" else (sim[col] - 1) * 100
+    for nm, colr, w, yv in (("합계 변화율", "royalblue", 4, (sim["v5"] / v5 - 1) * 100),
+                            ("기온 효과", "#ff7f0e", 2, (sim["R"] - 1) * 100),
+                            ("신규유입 효과", "#2ca02c", 2, (sim["G"] - 1) * 100)):
         figB.add_trace(go.Scatter(x=[base_end] + years, y=[0] + list(yv.values), mode="lines+markers", name=nm,
                                   line=dict(color=colr, width=w), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
     figB.add_hline(y=0, line_color="gray", line_width=1)
     figB.update_xaxes(dtick=2, tickformat="d")
     figB.update_yaxes(title=f"{base_end}년 대비 (%)", ticksuffix="%")
-    figB.update_layout(height=400, margin=dict(t=20), legend=dict(orientation="h", y=-0.22),
-                       title=dict(text=f"{base_end}년 대비 변화율과 요인 분해", font=dict(size=15)))
+    figB.update_layout(height=430, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
+                       title=dict(text=f"{base_end}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     g1, g2 = st.columns(2)
     g1.plotly_chart(figA, use_container_width=True)
     g2.plotly_chart(figB, use_container_width=True)
+    st.caption(f"중집난방은 취사/개별난방과 같은 비율로 증감합니다: {base_end}년 {v6:,.0f} → "
+               f"2040년 {sim.loc[2040, 'v6']:,.0f} → {TARGET_END}년 {sim.loc[TARGET_END, 'v6']:,.0f} ({sim.loc[TARGET_END, 'v6'] / v6 - 1:+.1%}).")
 
-    with st.expander("📋 가정용 연도별 산정표", expanded=False):
+    with st.expander("📋 연도별 산정표 (취사/개별난방)", expanded=False):
         t = pd.DataFrame({
             "구분": np.where(sim["활황"], "활황기", "비활황기"),
             f"기온 상승(℃, {base_end}년 대비)": sim["기온상승"],
             "신규유입 증가율(%)": sim["신규유입"],
             "기온 효과(누적)": sim["R"] - 1,
             "신규유입 효과(누적)": sim["G"] - 1,
-            labels[r5]: sim["v5"], labels[r6]: sim["v6"], "가정용 합계": sim["hh"],
+            labels[r5]: sim["v5"],
         })
-        t["전년 대비"] = t["가정용 합계"].pct_change()
-        t.loc[years[0], "전년 대비"] = sim.loc[years[0], "hh"] / hh_base - 1
+        t["전년 대비"] = t[labels[r5]].pct_change()
+        t.loc[years[0], "전년 대비"] = sim.loc[years[0], "v5"] / v5 - 1
         t.index = [f"{y}년" for y in t.index]
         st.dataframe(t.style.format({f"기온 상승(℃, {base_end}년 대비)": "{:.1f}", "신규유입 증가율(%)": "{:.2f}",
                                       "기온 효과(누적)": "{:+.2%}", "신규유입 효과(누적)": "{:+.2%}",
-                                      labels[r5]: "{:,.0f}", labels[r6]: "{:,.0f}", "가정용 합계": "{:,.0f}",
-                                      "전년 대비": "{:+.2%}"}), use_container_width=True)
+                                      labels[r5]: "{:,.0f}", "전년 대비": "{:+.2%}"}), use_container_width=True)
         st.caption("산식: V(Y) = V(기준연도) × Π(1+신규유입 증가율) × 기온 효과(Y). 기온 효과는 평년 일 기온을 평행이동해 난방도일을 다시 계산한 값입니다. "
-                   "중집난방은 계획의 구조 추세를 함께 반영합니다. 일 기온을 균등하게 올리므로 겨울철이 더 빨리 오르는 지구온난화 패턴은 반영하지 않습니다.")
-    st.caption("※ 가정용을 확정(위 토글)하면 이 값이 아래 전체 추정·그래프·엑셀에 들어가며, 가정용 행에는 추세 모델·기울기 옵션이 적용되지 않습니다.")
+                   "일 기온을 균등하게 올리므로 겨울철이 더 빨리 오르는 지구온난화 패턴은 반영하지 않습니다.")
+    st.caption("※ 가정용을 확정(위 토글)하면 취사/개별난방과 중집난방 값이 아래 전체 추정·그래프·엑셀에 들어가며, 두 행에는 추세 모델·기울기 옵션이 적용되지 않습니다.")
     st.markdown("---")
 
     out["apply"] = bool(apply)
@@ -731,7 +722,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0):
         ["평년 산정 기간", f"{ref_years[0]}~{ref_years[-1]}"],
         ["공동주택 활황기", f"{int(boom_start)}년부터 {int(boom_len)}년간, {int(cycle)}년 주기, 증가율 {g_start:.2f}→{g_end:.2f}%/년"],
         ["비활황기 증가율(%/년)", g_non],
-        ["중집난방 구조 추세(%/년)", f"{c6:+.2%}"],
+        ["중집난방", "취사/개별난방과 같은 증감 비율(기준연도 대비) 적용"],
     ]
     return out
 
