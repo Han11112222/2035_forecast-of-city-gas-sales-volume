@@ -69,11 +69,24 @@ def _holt(y):
     return best
 
 
-def project(years, vals, n, model, train_start=None, anchor=True):
+def adjust_path(last, out, mult=1.0, phi=1.0):
+    """[추가 옵션] 모델이 추정한 경로의 '연간 증감폭'을 사용자가 조정
+       mult : 기울기 배율 (1.0 = 모델 그대로, 0.5 = 증감폭 절반)
+       phi  : 감쇠계수 (k년째 증감폭에 phi**k 적용, 1.0 = 적용 안 함)"""
+    if mult == 1.0 and phi == 1.0:
+        return out
+    path = np.concatenate([[last], out])
+    d = np.diff(path) * mult * phi ** np.arange(1, len(out) + 1)
+    return last + np.cumsum(d)
+
+
+def project(years, vals, n, model, train_start=None, anchor=True, mult=1.0, phi=1.0, rate_pct=None):
     """
     years/vals : 실적·계획 연도와 값 (NaN 허용)
     n          : 이후 몇 년을 예측할지
     anchor     : True면 마지막 해 값에서 끊김 없이 이어지도록 모델선을 평행이동
+    mult/phi   : [추가 옵션] 기울기 배율 / 감쇠계수 (기본값이면 모델 결과 그대로)
+    rate_pct   : [추가 옵션] 값이 있으면 모델 대신 '마지막 값 × (1+증감률)^t' 사용
     반환 : (예측값 ndarray 또는 None, 비고 문자열 또는 None)
     """
     years = np.asarray(years, float)
@@ -126,6 +139,11 @@ def project(years, vals, n, model, train_start=None, anchor=True):
         out = f(tn)
         if anchor:
             out = out + (last - f(t[-1]))
+    if rate_pct is not None and not (isinstance(rate_pct, float) and np.isnan(rate_pct)):
+        out = last * (1 + float(rate_pct) / 100.0) ** k
+        note = f"직접 증감률 {float(rate_pct):+.2f}%/년 적용"
+    else:
+        out = adjust_path(last, out, mult, phi)
     return np.maximum(0, out), note
 
 
@@ -144,15 +162,20 @@ def backtest_mape(years, vals, model, train_start, anchor, holdout=3):
     return float(np.mean(np.abs(pred - test) / np.maximum(np.abs(test), 1e-9)))
 
 
-def build_projection(layout, global_model, train_start, anchor, row_model):
-    """반환: (예측 DataFrame[엑셀행 x 연도], 적용모델 dict, 비고 dict)"""
+def build_projection(layout, global_model, train_start, anchor, row_model,
+                     mult=1.0, phi=1.0, row_mult=None, row_rate=None):
+    """반환: (예측 DataFrame[엑셀행 x 연도], 적용모델 dict, 비고 dict)
+       mult/phi/row_mult/row_rate 는 [추가 옵션]. 기본값이면 모델 추정 결과 그대로."""
+    row_mult, row_rate = row_mult or {}, row_rate or {}
     hist, base_end = layout["hist"], layout["base_end"]
     hy = [y for y in hist.columns if y <= base_end]
     fut = list(range(base_end + 1, TARGET_END + 1))
     rows, used, notes = {}, {}, {}
     for r in layout["data_rows"]:
         m = row_model.get(r) or global_model
-        p, nt = project(hy, hist.loc[r, hy].values.astype(float), len(fut), m, train_start, anchor)
+        rm = row_mult.get(r)
+        p, nt = project(hy, hist.loc[r, hy].values.astype(float), len(fut), m, train_start, anchor,
+                        mult=(rm / 100.0 if rm is not None else mult), phi=phi, rate_pct=row_rate.get(r))
         if p is not None:
             rows[r], used[r] = p, m
             if nt:
@@ -224,7 +247,7 @@ def parse_layout(ws, ws_v):
                 data_rows=data_rows, total_row=total_row, hist=hist, base_end=max(filled))
 
 
-def write_workbook(file_bytes, sheet_name, layout, proj, used, global_model, train_start, anchor):
+def write_workbook(file_bytes, sheet_name, layout, proj, used, global_model, train_start, anchor, extra=None):
     wb = load_workbook(io.BytesIO(file_bytes))
     ws = wb[sheet_name]
     ycols = dict(layout["ycols"])
@@ -289,12 +312,20 @@ def write_workbook(file_bytes, sheet_name, layout, proj, used, global_model, tra
     memo.append(["학습 시작 연도", train_start])
     memo.append(["전체 적용 모델", MODEL_NAME.get(global_model, global_model)])
     memo.append(["마지막 해 값에서 이어붙이기", "예" if anchor else "아니오"])
+    extra = extra or {}
+    memo.append(["추가 옵션(사용자 조정)", "적용" if extra.get("on") else "미적용 (모델 추정값 그대로)"])
+    if extra.get("on"):
+        memo.append(["기울기 배율(%)", extra.get("mult_pct", 100)])
+        memo.append(["감쇠계수", extra.get("phi", 1.0)])
     memo.append([])
-    memo.append(["용도", "적용 모델"])
+    memo.append(["용도", "적용 모델", "기울기 배율(%) 개별", "직접 증감률(%/년)"])
     for r in layout["data_rows"]:
         if r in used:
-            memo.append([layout["labels"][r], MODEL_NAME.get(used[r], used[r])])
-    for col, w in (("A", 28), ("B", 32)):
+            rm = (extra.get("row_mult") or {}).get(r)
+            rr = (extra.get("row_rate") or {}).get(r)
+            memo.append([layout["labels"][r], MODEL_NAME.get(used[r], used[r]),
+                         "" if rm is None else rm, "" if rr is None else rr])
+    for col, w in (("A", 28), ("B", 32), ("C", 22), ("D", 22)):
         memo.column_dimensions[col].width = w
     bio = io.BytesIO()
     wb.save(bio)
@@ -385,24 +416,68 @@ def main():
         anchor = st.checkbox(f"{base_end}년 값에서 이어붙이기", value=True, key="p45_anchor",
                              help="모델선과 마지막 해 값의 차이만큼 평행이동해서 2036년에 값이 갑자기 튀지 않게 합니다.")
         st.caption(f"학습 구간: {train_start}~{base_end}년 ({base_end - train_start + 1}개 점)")
+        st.markdown("---")
+        st.header("🖼️ 표시 옵션")
+        y0 = st.checkbox("Y축을 0부터 표시", value=True, key="p45_y0",
+                         help="체크하면 변동 비율이 실제 크기 그대로 보입니다. 해제하면 축을 확대해 작은 변화도 크게 보입니다.")
 
     st.markdown(f"#### 선택한 모델: {mlabel}")
     st.info(MODEL_DESC[gm])
 
-    # ── 용도별 모델 개별 지정 ──
-    seed = [{"행": r, "용도": labels[r], "모델": FOLLOW_GLOBAL}
-            for r in layout["data_rows"] if not np.isnan(hist.loc[r, hy].values.astype(float)).all()]
-    with st.expander("🔧 용도별로 다른 모델 적용 (선택)", expanded=False):
-        st.caption("용도마다 흐름이 다르므로 필요하면 모델을 따로 지정하세요. 아래 '모델 비교'에서 용도별 결과와 검증오차를 먼저 볼 수 있습니다.")
+    # ── [추가 옵션] 기울기 직접 조정 ──
+    adv = st.toggle("⚙️ 추가 옵션 (기울기 직접 조정)", value=False, key="p45_adv",
+                    help="모델이 추정한 증감 추세의 기울기를 시나리오 가정으로 직접 조정합니다. 꺼두면 모델 추정값 그대로입니다.")
+    mult_pct, phi = 100, 1.0
+    if adv:
+        a1, a2 = st.columns(2)
+        with a1:
+            mult_pct = st.slider("기울기 배율 (%)", 0, 200, 100, 5, key="p45_mult",
+                                 help="100% = 모델 추정 그대로, 50% = 연간 증감폭을 절반으로, 0% = 증감 없음(보합), 150% = 1.5배 가파르게")
+        with a2:
+            phi = st.slider("감쇠계수", 0.50, 1.00, 1.00, 0.01, key="p45_phi",
+                            help="1.00 = 적용 안 함. 0.90이면 매년 증감폭이 전년의 90%로 줄어듭니다(매년 10%씩 감소).")
+        st.caption("⚠️ 이 값은 모델이 데이터에서 추정한 것이 아니라 **사용자가 정하는 시나리오 가정**입니다. "
+                   "엑셀의 '2045확장_적용내역' 시트에 함께 기록됩니다.")
+
+    # ── 용도별 모델/기울기 개별 지정 ──
+    seed = []
+    for r in layout["data_rows"]:
+        if np.isnan(hist.loc[r, hy].values.astype(float)).all():
+            continue
+        row = {"행": r, "용도": labels[r], "모델": FOLLOW_GLOBAL}
+        if adv:
+            row["기울기 배율(%)"] = np.nan
+            row["직접 증감률(%/년)"] = np.nan
+        seed.append(row)
+    col_cfg = {"모델": st.column_config.SelectboxColumn("모델", options=[FOLLOW_GLOBAL] + list(MODELS)),
+               "행": st.column_config.NumberColumn("엑셀 행", width="small")}
+    if adv:
+        col_cfg["기울기 배율(%)"] = st.column_config.NumberColumn(
+            "기울기 배율(%)", min_value=0, max_value=300, step=5, format="%.0f",
+            help="비워두면 위의 전체 배율을 따릅니다")
+        col_cfg["직접 증감률(%/년)"] = st.column_config.NumberColumn(
+            "직접 증감률(%/년)", step=0.1, format="%.2f",
+            help="입력하면 모델 대신 '마지막 값 × (1+증감률)^t'로 계산합니다 (예: -0.5)")
+    with st.expander("🔧 용도별로 다른 모델 / 기울기 적용 (선택)", expanded=False):
+        st.caption("용도마다 흐름이 다르므로 필요하면 모델을 따로 지정하세요. 아래 '모델 비교'에서 용도별 결과를 먼저 볼 수 있습니다."
+                   + (" 기울기 배율·직접 증감률은 비워두면 적용되지 않습니다." if adv else " 기울기는 위의 '추가 옵션'을 켜면 용도별로도 조정할 수 있습니다."))
         edited = st.data_editor(
             pd.DataFrame(seed), hide_index=True, use_container_width=True, disabled=["행", "용도"],
-            column_config={"모델": st.column_config.SelectboxColumn("모델", options=[FOLLOW_GLOBAL] + list(MODELS)),
-                           "행": st.column_config.NumberColumn("엑셀 행", width="small")},
-            key=f"p45_ed_{sheet}")
-    row_model = {int(rw["행"]): (None if rw["모델"] == FOLLOW_GLOBAL else MODELS[rw["모델"]])
-                 for _, rw in edited.iterrows()}
+            column_config=col_cfg, key=f"p45_ed_{sheet}_{int(adv)}")
+    row_model, row_mult, row_rate = {}, {}, {}
+    for _, rw in edited.iterrows():
+        r = int(rw["행"])
+        row_model[r] = None if rw["모델"] == FOLLOW_GLOBAL else MODELS[rw["모델"]]
+        if adv:
+            if pd.notna(rw.get("기울기 배율(%)")):
+                row_mult[r] = float(rw["기울기 배율(%)"])
+            if pd.notna(rw.get("직접 증감률(%/년)")):
+                row_rate[r] = float(rw["직접 증감률(%/년)"])
 
-    proj, used, notes = build_projection(layout, gm, train_start, anchor, row_model)
+    proj, used, notes = build_projection(layout, gm, train_start, anchor, row_model,
+                                         mult_pct / 100.0, phi, row_mult, row_rate)
+    adjusted = bool(adv and (mult_pct != 100 or phi != 1.0 or row_mult or row_rate))
+    proj0, _, _ = build_projection(layout, gm, train_start, anchor, row_model) if adjusted else (None, None, None)
     if proj.empty:
         st.error("예측할 수 있는 용도 행이 없습니다.")
         return
@@ -410,8 +485,9 @@ def main():
     full = pd.concat([hist.loc[rows, hy], proj.loc[rows]], axis=1)
     full.index = [labels[r] for r in rows]
     tot = full.sum()
-    if notes:
-        st.warning("⚠️ " + " / ".join(f"{labels[r]}: {n}" for r, n in notes.items()))
+    warn = {r: n for r, n in notes.items() if not n.startswith("직접")}
+    if warn:
+        st.warning("⚠️ " + " / ".join(f"{labels[r]}: {n}" for r, n in warn.items()))
 
     # ── 결과 요약 ──
     st.markdown("### 결과")
@@ -425,22 +501,44 @@ def main():
     t1, t2, t3, t4 = st.tabs(["📈 합계 추이", "🧪 모델 비교 (용도별)", "🧱 용도별 추이", "📋 연도별 상세표"])
 
     with t1:
+        M = 1e6
         hist_tot = tot[[y for y in tot.index if y <= base_end]]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=hist_tot.index, y=hist_tot.values, mode="lines+markers",
-                                 name="계획/실적", line=dict(color="gray", width=3)))
         sel = tot[[y for y in tot.index if y >= base_end]]
-        fig.add_trace(go.Scatter(x=sel.index, y=sel.values, mode="lines+markers", name=f"{mlabel}",
-                                 line=dict(color="royalblue", width=4)))
+        label_years = {hist_tot.index[0], base_end, 2040, TARGET_END}
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=hist_tot.index, y=hist_tot.values / M, mode="lines+markers+text", name="계획/실적",
+            line=dict(color="gray", width=3), textposition="top center",
+            text=[f"{v / M:.1f}" if y in label_years else "" for y, v in hist_tot.items()],
+            hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
+        ymax = max(hist_tot.max(), tot.max())
+        if adjusted:
+            t0 = proj0.loc[rows].sum(axis=0)
+            ymax = max(ymax, t0.max())
+            fig.add_trace(go.Scatter(
+                x=[base_end] + list(t0.index), y=[hist_tot[base_end] / M] + list(t0.values / M), mode="lines",
+                name=f"{mlabel} (조정 전)", line=dict(color="gray", width=2, dash="dot"),
+                hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=sel.index, y=sel.values / M, mode="lines+markers+text",
+            name=f"{mlabel}" + (" (기울기 조정)" if adjusted else ""),
+            line=dict(color="royalblue", width=4), textposition="top center",
+            text=[f"{v / M:.1f}" if y in label_years else "" for y, v in sel.items()],
+            hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
         fig.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
                       annotation_text="추세 예측", annotation_position="inside top")
         fig.update_xaxes(dtick=2, tickformat="d")
-        fig.update_layout(height=440, margin=dict(t=20), yaxis_title="GJ")
+        fig.update_yaxes(title="백만 GJ", tickformat=",.0f" if y0 else ",.1f")
+        if y0:
+            fig.update_yaxes(range=[0, ymax / M * 1.15])
+        fig.update_layout(height=440, margin=dict(t=20), legend=dict(orientation="h", y=-0.2))
         st.plotly_chart(fig, use_container_width=True)
+        st.caption("Y축을 0부터 표시합니다. 사이드바 '표시 옵션'에서 확대 보기로 바꿀 수 있습니다." if y0
+                   else "⚠️ Y축을 확대해서 표시 중입니다. 작은 변화도 크게 보일 수 있습니다.")
 
     with t2:
         st.caption("용도를 고르면 6개 모델의 예측을 한 화면에서 비교합니다. 검증오차는 학습 구간의 마지막 3개 연도를 가리고 예측했을 때의 평균 오차율로, "
-                   "값이 작을수록 최근 흐름을 잘 맞춘 모델입니다. (점이 적어 참고용이며, 계획값 자체가 추세로 작성된 구간이라 '계획과의 일치도'로 이해하세요.)")
+                   "값이 작을수록 최근 흐름을 잘 맞춘 모델입니다. (점이 적어 참고용이며, 계획값 자체가 추세로 작성된 구간이라 '계획과의 일치도'로 이해하세요.) 이 탭은 추가 옵션 적용 전 모델 원본 값입니다.")
         pick = st.selectbox("용도", ["합계"] + [labels[r] for r in rows], key="p45_pick")
         if pick == "합계":
             series = hist.loc[rows, hy].sum(axis=0).values.astype(float)
@@ -450,13 +548,14 @@ def main():
         figm = go.Figure()
         figm.add_trace(go.Scatter(x=hy, y=series, mode="lines+markers", name="계획/실적",
                                   line=dict(color="gray", width=3)))
-        recs = []
+        recs, ymax_c = [], float(np.nanmax(series))
         for lab, key in MODELS.items():
             if pick == "합계":
                 pm, _, _ = build_projection(layout, key, train_start, anchor, {})
                 p = pm.loc[rows].sum(axis=0).values
             else:
                 p, _ = project(hy, series, TARGET_END - base_end, key, train_start, anchor)
+            ymax_c = max(ymax_c, float(np.nanmax(p)))
             fy = list(range(base_end + 1, TARGET_END + 1))
             figm.add_trace(go.Scatter(x=[base_end] + fy, y=[series[-1]] + list(p), mode="lines",
                                       name=lab, line=dict(width=4 if key == gm else 1.8)))
@@ -467,6 +566,8 @@ def main():
         figm.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
         figm.update_xaxes(dtick=2, tickformat="d")
         figm.update_layout(height=440, legend=dict(orientation="h", y=-0.25), margin=dict(t=20), yaxis_title="GJ")
+        if y0:
+            figm.update_yaxes(range=[0, ymax_c * 1.1])
         st.plotly_chart(figm, use_container_width=True)
         st.dataframe(pd.DataFrame(recs).set_index("모델").style.format(
             {"2040년": "{:,.0f}", f"{TARGET_END}년": "{:,.0f}", f"{TARGET_END}년 vs {base_end}년": "{:+.1%}",
@@ -511,10 +612,11 @@ def main():
 
     # ── 엑셀 다운로드 ──
     st.markdown("### 엑셀 다운로드")
-    out = write_workbook(data, sheet, layout, proj, used, gm, train_start, anchor)
+    extra = {"on": adjusted, "mult_pct": mult_pct, "phi": phi, "row_mult": row_mult, "row_rate": row_rate}
+    out = write_workbook(data, sheet, layout, proj, used, gm, train_start, anchor, extra)
     st.download_button(
         "📥 2045 확장 엑셀 다운로드", data=out,
-        file_name=f"중장기공급량추정_{TARGET_END}_{mlabel.split('. ')[1].split('(')[0].strip().replace(' ', '')}.xlsx",
+        file_name=f"중장기공급량추정_{TARGET_END}_{mlabel.split('. ')[1].split('(')[0].strip().replace(' ', '')}{'_기울기조정' if adjusted else ''}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
     st.caption("원본 서식·수식은 유지되고, 합계/전년대비/증감/비율 행은 수식으로 2045년까지 확장됩니다. 적용한 모델은 엑셀 끝의 '2045확장_적용내역' 시트에 기록됩니다.")
 
