@@ -710,9 +710,6 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     kk5 = calib["k"].iloc[-5:]
     k_slope = np.polyfit(kk5.index.values, np.log(kk5.values), 1)[0] if len(kk5) >= 3 else np.nan
     per = "월" if calib["level"] == "월" else "일"
-    st.markdown(
-        f"**적합 결과** · 취사/개별난방 {per} 공급량 ∼ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
-        f"기온 +0.1℃ → **{s01:+.2%}**, +1℃ → **{s10:+.1%}** (연간 물량, 평년 {ref_years[0]}∼{ref_years[-1]} 기준)")
     # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) ──
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(f"{anchor_year}년 취사/개별난방" + (" (확정)" if scope2 else ""), f"{v5:,.0f}")
@@ -720,11 +717,6 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'v5']:,.0f}", f"{sim.loc[TARGET_END, 'v5'] / v5 - 1:+.1%}")
     k4.metric(f"{TARGET_END}년 기온 효과 / 신규유입 효과",
               f"{sim.loc[TARGET_END, 'R'] - 1:+.1%} / {sim.loc[TARGET_END, 'G'] - 1:+.1%}")
-    if scope2 and anchor_year < base_end:
-        plan_end = float(hist.loc[r5, base_end])
-        st.caption(f"{base_end}년 취사/개별난방: 시뮬레이션 {sim.loc[base_end, 'v5']:,.0f} vs 기존 계획 {plan_end:,.0f} "
-                   f"({sim.loc[base_end, 'v5'] / plan_end - 1:+.1%}) — 옵션2에서는 {anchor_year + 1}∼{base_end}년 기존 계획값이 시뮬레이션 값으로 대체됩니다.")
-
     hy_a = [y for y in hy if 2026 <= y <= anchor_year]
     hist5 = hist.loc[r5, hy_a].astype(float)
     M = 1e6
