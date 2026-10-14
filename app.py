@@ -699,14 +699,11 @@ def render_history_section(y0):
     x = tbl.index.values.astype(float)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=tbl.index, y=tbl["실제"], mode="lines+markers+text", name="실제 공급량",
-                             line=dict(color="gray", width=3), text=[f"{v:.1f}" for v in tbl["실제"]], textposition="top center"))
+                             line=dict(color="black", width=4), text=[f"{v:.1f}" for v in tbl["실제"]], textposition="top center"))
     allv = list(tbl["실제"].values)
     if "기온보정" in tbl and tbl["기온보정"].notna().sum() >= 3:
         fig.add_trace(go.Scatter(x=tbl.index, y=tbl["기온보정"], mode="lines+markers", name="기온 보정 (평년 기온 기준)",
-                                 line=dict(color="black", width=4)))
-        b1, b0 = np.polyfit(x[tbl["기온보정"].notna()], tbl["기온보정"].dropna().values, 1)
-        fig.add_trace(go.Scatter(x=tbl.index, y=b0 + b1 * x, mode="lines", name="기온 보정 추세선",
-                                 line=dict(color="black", width=2, dash="dash")))
+                                 line=dict(color="gray", width=3)))
         allv += list(tbl["기온보정"].dropna().values)
     lo, hi = min(allv), max(allv)
     pad = (hi - lo) * 0.35 + 0.1
@@ -718,7 +715,7 @@ def render_history_section(y0):
     note = f"자료: {src}. "
     if filled:
         note += " / ".join(f"{y}년 {', '.join(str(m) + '월' for m in ms)}은 실적이 없어 기온-공급량 모델로 보완" for y, ms in filled.items()) + ". "
-    note += "기온 보정 = 연도별 기온 영향을 제거하고 평년 기온(최근 10년)으로 환산한 값으로, 기온이 아닌 구조적 증감(고객·사용량 변화)을 보여줍니다."
+    note += "기온 보정 = 연도별 기온 영향을 제거하고 평년 기온(최근 10개 연도의 일 평균기온)으로 환산한 값으로, 기온이 아닌 구조적 증감(고객·사용량 변화)을 보여줍니다."
     st.caption(note)
     with st.expander("📋 연도별 표", expanded=False):
         t = tbl.copy()
