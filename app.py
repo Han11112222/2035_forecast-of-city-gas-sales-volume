@@ -636,6 +636,9 @@ def get_household_monthly(sup_b):
 
 def render_history_section(y0):
     """화면 상단: 2018~2025 가정용(취사용+개별난방용) 과거 실적과 추세"""
+    if not st.toggle("📊 과거 실적 분석 (가정용 취사용+개별난방용)", value=False, key="hist_on",
+                     help="켜면 가정용 과거 실적(월별 → 연간)과 기준연도 대비 증감·추세를 보여줍니다."):
+        return
     st.subheader("📊 가정용 과거 실적 분석 (취사용+개별난방용)")
     sup_b = _read_repo_bytes(HH_SUPPLY_FILE)
     try:
