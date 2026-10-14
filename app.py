@@ -39,6 +39,7 @@ CONFIRMED_VALUES = {
     "주한미군용": {2026: 57073, 2027: 56144, 2028: 54682, 2029: 53338},
 }
 
+HH_TITLE_H = 84  # 오른쪽 표 머리글을 왼쪽 표 머리글 높이에 맞추는 제목 영역 높이(px)
 PLOT_CFG = {"scrollZoom": True, "displaylogo": False}  # 마우스 휠 확대/축소
 
 
@@ -672,7 +673,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     def _hl2(row):
         return ["background-color: #FFE699; font-weight: 700; color: #000" if _on[row.name] else "" for _ in row]
     with _sp:
-        st.markdown("**공동주택 신규유입 물량**")
+        st.markdown("<div style='height:%dpx;font-weight:600;padding-top:6px'>공동주택 신규유입 물량</div>" % HH_TITLE_H, unsafe_allow_html=True)
         st.table(_tb.style.hide(axis="index").apply(_hl2, axis=1)
                  .set_table_styles([{"selector": "th", "props": [("background-color", "#D9D9D9"), ("color", "#000"), ("font-weight", "700")]}])
                  .set_properties(**{"text-align": "center"}))
