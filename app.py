@@ -701,7 +701,7 @@ def render_history_section(y0):
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(f"{tbl.index[0]}년 공급량", f"{a0:,.2f} 백만GJ")
     c2.metric(f"{tbl.index[-1]}년 공급량", f"{a1:,.2f} 백만GJ", f"{a1 / a0 - 1:+.1%} ({tbl.index[0]}년 대비)")
-    c3.metric("연평균 증감률 (실제)", f"{(a1 / a0) ** (1 / n) - 1:+.2%}")
+    c3.metric(f"{tbl.index[0]}년 대비 증감률 (연평균)", f"{(a1 / a0) ** (1 / n) - 1:+.2%}")
     _xx = tbl.index.values.astype(float)
     _sl = np.polyfit(_xx, tbl["실제"].values, 1)[0]
     c4.metric("추세선 기울기", f"{_sl:+.2f} 백만GJ/년", f"{_sl / a0:+.2%} ({tbl.index[0]}년 대비 연평균)")
