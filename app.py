@@ -24,7 +24,31 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="공급량 중장기 추정", layout="wide")
 
 TARGET_END = 2045
+PLAN_END = 2035  # 원래 계획이 작성된 마지막 해
+# 확정값 (2026~2029년, 사용자가 확인한 엑셀 값). 저장소 엑셀이 예전 값이면 이 값으로 교체해 사용합니다.
+CONFIRMED_VALUES = {
+    "주택용_취사/개별난방": {2026: 24689242, 2027: 24762440, 2028: 25114005, 2029: 24944797},
+    "주택용_중집난방": {2026: 836497, 2027: 835248, 2028: 843196, 2029: 834350},
+    "업무난방": {2026: 693593, 2027: 684270, 2028: 677113, 2029: 670119},
+    "일반용": {2026: 3381184, 2027: 3351860, 2028: 3342768, 2029: 3303216},
+    "냉난방용": {2026: 1403814, 2027: 1399607, 2028: 1442951, 2029: 1424315},
+    "산업용": {2026: 8678288, 2027: 8727394, 2028: 8718795, 2029: 8592138},
+    "열병합용": {2026: 248368, 2027: 248970, 2028: 278738, 2029: 249837},
+    "연료전지용": {2026: 203147, 2027: 591953, 2028: 862788, 2029: 867490},
+    "수송용(BIO포함)": {2026: 3174626, 2027: 2973354, 2028: 2511844, 2029: 2155094},
+    "주한미군용": {2026: 57073, 2027: 56144, 2028: 54682, 2029: 53338},
+}
+
 PLOT_CFG = {"scrollZoom": True, "displaylogo": False}  # 마우스 휠 확대/축소
+
+
+def _merge_over(over, conf_over):
+    """가정용 시뮬레이션 대체값 + 확정값 교체분을 행별 Series로 합침"""
+    out = {r: s.copy() for r, s in over.items()}
+    for r, d in conf_over.items():
+        cs = pd.Series(d, dtype=float)
+        out[r] = pd.concat([cs, out[r]]) if r in out else cs
+    return out
 
 
 def show_chart(fig):
@@ -379,11 +403,16 @@ def write_workbook(file_bytes, sheet_name, layout, proj, used, global_model, tra
 # 3. 파일 로딩
 # ─────────────────────────────────────────────────────────
 def _repo_plan_path():
+    """저장소의 계획 엑셀: '2045_수정파일*.xlsx' 중 가장 최근(이름순) 파일 우선, 없으면 기존 파일명"""
+    import glob
     try:
         bases = [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]
     except NameError:
         bases = [os.getcwd()]
     for d in bases:
+        c = sorted(glob.glob(os.path.join(d, "2045_수정파일*.xlsx")))
+        if c:
+            return c[-1]
         p = os.path.join(d, REPO_PLAN_FILE)
         if os.path.exists(p):
             return p
@@ -807,7 +836,7 @@ def main():
     elif repo_path:
         with open(repo_path, "rb") as f:
             data = f.read()
-        src_name = REPO_PLAN_FILE
+        src_name = os.path.basename(repo_path)
     else:
         st.info(f"👈 저장소에 '{REPO_PLAN_FILE}'이 없습니다. 왼쪽에서 엑셀을 업로드하세요.")
         return
@@ -826,11 +855,25 @@ def main():
     layout = cands[sheet]
     base_end = layout["base_end"]
     if base_end >= TARGET_END:
-        st.warning(f"이미 {base_end}년까지 값이 있습니다.")
-        return
+        # 엑셀에 이미 2045년까지 값이 들어 있어도(이전 추정 결과), 원래 계획 마지막 해(2035)까지만 계획으로 보고 이후는 다시 추정해 덮어씁니다.
+        base_end = PLAN_END
+        layout = dict(layout, base_end=PLAN_END)
     hist = layout["hist"]
     hy = [y for y in hist.columns if y <= base_end]
     labels = layout["labels"]
+    # 저장소 엑셀(업로드 아님)의 2026~2029년 값이 확정값과 다르면 확정값으로 교체 (엑셀 다운로드에도 반영)
+    conf_over = {}
+    if up is None:
+        hist = hist.copy()
+        for r in layout["data_rows"]:
+            for y, v in CONFIRMED_VALUES.get(labels[r], {}).items():
+                if y in hist.columns and (np.isnan(hist.loc[r, y]) or abs(hist.loc[r, y] - v) > 0.5):
+                    hist.loc[r, y] = v
+                    conf_over.setdefault(r, {})[y] = v
+        layout = dict(layout, hist=hist)
+        if conf_over:
+            st.info("저장소 엑셀의 2026∼2029년 값이 확정값과 달라, 확정값(2026∼2029년)으로 교체해서 계산·다운로드합니다. "
+                    "저장소 엑셀을 확정값 파일로 교체하면 이 안내는 사라집니다.")
     st.caption(f"📄 {src_name} · {base_end}년까지의 계획을 {TARGET_END}년까지 연장")
 
     # ── 추정 범위 (옵션1/2) ──
@@ -1111,7 +1154,7 @@ def main():
     notes_x = list(hh["notes"]) if hh["rows"] else []
     if hold_tr and tr_rows:
         notes_x.append(["수송용", f"{base_end}년 수준 임시 유지 (담당부서 자료 수령 후 교체 필요)"])
-    extra = {"on": adjusted, "mult_pct": mult_pct, "phi": phi, "row_mult": row_mult, "row_rate": row_rate, "notes": notes_x, "overrides": over,
+    extra = {"on": adjusted, "mult_pct": mult_pct, "phi": phi, "row_mult": row_mult, "row_rate": row_rate, "notes": notes_x, "overrides": _merge_over(over, conf_over),
              "conf_year": anchor_year if scope2 else 2029}
     out = write_workbook(data, sheet, layout, proj, used, gm, train_start, anchor, extra)
     st.download_button(
