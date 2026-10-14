@@ -844,10 +844,7 @@ def main():
     st.caption(f"📄 {src_name} · {base_end}년까지의 계획을 {TARGET_END}년까지 연장")
 
     # ── 추정 범위 (옵션1/2) ──
-    opt_lbl = [f"옵션1 : {base_end + 1}~{TARGET_END}년까지 추정", "옵션2 : 2030~2045년까지 추정"]
-    scope_sel = st.radio("추정 범위", opt_lbl, horizontal=True, key="p45_scope",
-                         help="옵션1: 기존 계획(∼2035) 유지 후 2036년부터 추정. 옵션2: 확정 연도 이후(2030년∼)를 가정용 기온 시뮬레이션으로 다시 추정합니다.")
-    scope2 = scope_sel == opt_lbl[1]
+    scope2 = True  # 2030~2045년 추정이 기본 (옵션 선택 삭제)
     anchor_year = base_end
     if scope2:
         cands_y = [y for y in hy if 2025 <= y < base_end]
