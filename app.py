@@ -321,11 +321,29 @@ def write_workbook(file_bytes, sheet_name, layout, proj, used, global_model, tra
                 c.value = Translator(src.value, origin=src.coordinate).translate_formula(c.coordinate)
                 style_from_src(c, src)
 
+    # 배경색: 확정 구간(2026~확정 연도) = 노랑, 추정 구간(이후~2045) = 연한 파랑
+    conf = (extra or {}).get("conf_year")
+    if conf:
+        from openpyxl.styles import PatternFill
+        f_conf = PatternFill("solid", start_color="FFE699", end_color="FFE699")
+        f_est = PatternFill("solid", start_color="DDEBF7", end_color="DDEBF7")
+        for y, col in ycols.items():
+            if y < 2026:
+                continue
+            fill = f_conf if y <= conf else f_est
+            for r in list(layout["data_rows"]) + [tr]:
+                ws.cell(r, col).fill = fill
+            if y > conf:
+                ws.cell(hr, col).fill = f_est
+        ws.cell(hr + 0, 1)  # no-op
+
     memo_name = "2045확장_적용내역"
     if memo_name in wb.sheetnames:
         del wb[memo_name]
     memo = wb.create_sheet(memo_name)
     memo.append(["항목", "내용"])
+    if conf:
+        memo.append(["배경색", f"2026~{conf}년 노랑(확정), {conf + 1}~{TARGET_END}년 연한 파랑(추정)"])
     memo.append(["기준(마지막 계획) 연도", base_end])
     memo.append(["학습 시작 연도", train_start])
     memo.append(["전체 적용 모델", MODEL_NAME.get(global_model, global_model)])
@@ -598,16 +616,13 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         st.warning(f"{anchor_year}년 가정용 값이 엑셀에 없어 시뮬레이션을 건너뜁니다. (옵션1로 바꾸거나 엑셀을 확인하세요)")
         return out
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
+    apply = True  # 가정용 시뮬레이션은 항상 전체 추정에 반영
+    half, _sp = st.columns([1, 1])
+    with half:
         rate = st.number_input("연평균 기온 상승 (℃/년)", 0.0, 0.5, 0.055, 0.005, format="%.3f", key="hh_rate",
-                               help="기본 0.055 = 2010∼2025년 관측 연평균 기온의 선형 추세. 아래 '적합 결과'에 기간별 관측 추세가 표시됩니다.")
-    with c2:
-        st.write("")
-        apply = st.toggle("✅ 가정용 확정 → 아래 전체 추정에 반영", value=True, key="hh_apply",
-                          help="끄면 가정용도 다른 용도처럼 선택한 추세 모델로 계산합니다.")
+                               help="기본 0.055 = 2∼010∼2025년 관측 연평균 기온의 선형 추세.".replace("2∼010", "2010"))
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
-    trend_slot = st.container()
+    trend_slot = half.container()
     with trend_slot:
         show_tr = st.toggle("연평균 기온 상승", value=False, key="hh_trend_tbl",
                             help="관측 연평균 기온의 기간별 선형 추세(℃/년)를 표로 보여줍니다.")
@@ -1109,7 +1124,8 @@ def main():
     notes_x = list(hh["notes"]) if hh["rows"] else []
     if hold_tr and tr_rows:
         notes_x.append(["수송용", f"{base_end}년 수준 임시 유지 (담당부서 자료 수령 후 교체 필요)"])
-    extra = {"on": adjusted, "mult_pct": mult_pct, "phi": phi, "row_mult": row_mult, "row_rate": row_rate, "notes": notes_x, "overrides": over}
+    extra = {"on": adjusted, "mult_pct": mult_pct, "phi": phi, "row_mult": row_mult, "row_rate": row_rate, "notes": notes_x, "overrides": over,
+             "conf_year": anchor_year if scope2 else 2029}
     out = write_workbook(data, sheet, layout, proj, used, gm, train_start, anchor, extra)
     st.download_button(
         "📥 2045 확장 엑셀 다운로드", data=out,
