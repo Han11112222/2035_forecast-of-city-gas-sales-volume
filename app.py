@@ -702,9 +702,9 @@ def render_history_section(y0):
     c1.metric(f"{tbl.index[0]}년 공급량", f"{a0:,.2f} 백만GJ")
     c2.metric(f"{tbl.index[-1]}년 공급량", f"{a1:,.2f} 백만GJ", f"{a1 / a0 - 1:+.1%} ({tbl.index[0]}년 대비)")
     c3.metric("연평균 증감률 (실제)", f"{(a1 / a0) ** (1 / n) - 1:+.2%}")
-    if "기온보정" in tbl and tbl["기온보정"].notna().sum() >= 3:
-        s0, s1 = tbl["기온보정"].dropna().iloc[0], tbl["기온보정"].dropna().iloc[-1]
-        c4.metric("연평균 증감률 (기온 보정)", f"{(s1 / s0) ** (1 / n) - 1:+.2%}", f"{s1 / s0 - 1:+.1%} ({tbl.index[0]}년 대비)")
+    _xx = tbl.index.values.astype(float)
+    _sl = np.polyfit(_xx, tbl["실제"].values, 1)[0]
+    c4.metric("추세선 기울기", f"{_sl:+.2f} 백만GJ/년", f"{_sl / a0:+.2%} ({tbl.index[0]}년 대비 연평균)")
     x = tbl.index.values.astype(float)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=tbl.index, y=tbl["실제"], mode="lines+markers+text", name="실제 공급량",
@@ -724,14 +724,12 @@ def render_history_section(y0):
     note = f"자료: {src}. "
     if filled:
         note += " / ".join(f"{y}년 {', '.join(str(m) + '월' for m in ms)}은 실적이 없어 기온-공급량 모델로 보완" for y, ms in filled.items()) + ". "
-    note += "기온 보정 = 연도별 기온 영향을 제거하고 평년 기온(최근 10개 연도의 일 평균기온)으로 환산한 값으로, 기온이 아닌 구조적 증감(고객·사용량 변화)을 보여줍니다."
+    note += "점선은 선택한 기준연도부터 2025년까지 실제 공급량의 직선 추세입니다. 연도별 공급량은 기온(추운 해·따뜻한 해)의 영향을 그대로 포함합니다."
     st.caption(note)
     with st.expander("📋 연도별 표", expanded=False):
         t = tbl.copy()
         t["실제 증감"] = t["실제"].pct_change()
-        if "기온보정" in t:
-            t["기온보정 증감"] = t["기온보정"].pct_change()
-        t = t.rename(columns={"실제": "실제(백만GJ)", "기온보정": "기온보정(백만GJ)"})
+        t = t[["실제", "실제 증감"]].rename(columns={"실제": "실제(백만GJ)"})
         t.index = [f"{i}년" for i in t.index]
         fm = {c: "{:,.2f}" for c in t.columns if "백만" in c}
         fm.update({c: "{:+.1%}" for c in t.columns if "증감" in c})
