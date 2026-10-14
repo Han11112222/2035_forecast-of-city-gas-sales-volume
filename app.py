@@ -532,6 +532,12 @@ def season_total(calib, temp_df, ref_years, shift):
     return calib["a"] * n + calib["b"] * hdd
 
 
+def _bell(pos, n):
+    """활황기 안에서의 위치(0~n-1) → 0(시작·끝)~1(중간 최대) 종 모양"""
+    sh = [np.sin(np.pi * k / (n - 1)) for k in range(n)]
+    return sh[pos] / max(sh)
+
+
 def simulate_household(v5, v6, years, calib, temp_df, ref_years, p):
     """기준연도(2035) 값에서 출발해 연도별 물량 산정
        취사/개별난방 = V × Π(1+신규유입 증가율) × 기온 효과
@@ -545,7 +551,7 @@ def simulate_household(v5, v6, years, calib, temp_df, ref_years, p):
         pos = (Y - p["boom_start"]) % p["cycle"]
         boom = (Y >= p["boom_start"]) and pos < p["boom_len"]
         if boom:
-            g = p["g_start"] if p["boom_len"] <= 1 else p["g_start"] + (p["g_end"] - p["g_start"]) * pos / (p["boom_len"] - 1)
+            g = p["g_end"] if p["boom_len"] <= 1 else p["g_start"] + (p["g_end"] - p["g_start"]) * _bell(pos, p["boom_len"])
         else:
             g = p["g_non"]
         G *= 1 + g / 100.0
@@ -596,7 +602,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     st.info(f"**(연평균 기온 {rate:g}도 상승 가정)**  일 기온 → 난방도일 → 공급량 관계를 실적으로 적합해 기온 효과를 계산하고, "
             f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {anchor_year + 1}~{TARGET_END}년 **취사/개별난방** 물량을 산정합니다. "
             f"출발점은 {start_txt}이며, **중집난방은 취사/개별난방과 같은 증감 비율**을 따라갑니다. "
-            f"기온 상승은 {anchor_year + 1}년부터 적용됩니다.")
+            f"기온 상승은 {anchor_year + 1}년부터 적용되며, 출발 연도 기온은 3개년 롤링 평균(평년 수준)으로 봅니다.")
 
     # ── 데이터 ──
     temp_b, sup_b = _read_repo_bytes(HH_TEMP_FILE), _read_repo_bytes(HH_SUPPLY_FILE)
@@ -654,16 +660,15 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
             boom_len = st.number_input("활황 기간 (년)", 1, 10, 6, 1, key="hh_bl", help="2030~2035 = 6년")
             cycle = st.number_input("반복 주기 (년)", 5, 20, 10, 1, key="hh_cy", help="10년 주기 → 2040~2045 재활황")
         with a2:
-            g_start = st.number_input("활황기 증가율 시작 (%/년)", 0.0, 3.0, 0.4, 0.05, format="%.2f", key="hh_g0",
-                                      help="활황 첫해 증가율. 마지막 해까지 직선으로 변합니다.")
-            g_end = st.number_input("활황기 증가율 끝 (%/년)", 0.0, 3.0, 0.7, 0.05, format="%.2f", key="hh_g1")
+            g_start = st.number_input("활황기 증가율 최저 — 시작·끝 해 (%/년)", 0.0, 3.0, 0.3, 0.05, format="%.2f", key="hh_g0",
+                                      help="활황기 첫 해와 마지막 해의 증가율. 중간으로 갈수록 커집니다.")
+            g_end = st.number_input("활황기 증가율 최대 — 중간 해 (%/년)", 0.0, 3.0, 0.7, 0.05, format="%.2f", key="hh_g1",
+                                    help="활황기 가운데 해의 증가율(종 모양으로 변함).")
             g_non = st.number_input("비활황기 증가율 (%/년)", -3.0, 3.0, 0.2, 0.05, format="%.2f", key="hh_gn",
                                     help="기온이 같을 때 신규 공동주택 유입으로 생기는 소폭 증가분(가정값).")
         with a3:
             n_ref = st.slider("평년 산정 기간 (최근 N년)", 5, min(30, len(full_y)), min(10, len(full_y)), key="hh_ref")
-            dT0 = st.number_input(f"{anchor_year}년이 전제한 기온 (평년 대비 ℃)", -2.0, 3.0, 0.0, 0.1, format="%.1f", key="hh_dt0",
-                                  help="0 = 출발 연도가 평년 기온이라고 봅니다. 연평균 상승은 이 기온에서 출발해 매년 더해집니다. "
-                                       "이 값을 바꿔도 하락률은 거의 변하지 않습니다(상승 속도가 아니라 출발 기온).")
+    dT0 = 0.0  # 출발 연도(3개년 롤링 평균 기온)를 평년 수준으로 보고 상승분만 더함
     ref_years = full_y[-n_ref:]
     p = dict(rate=rate, dT0=dT0, base_year=anchor_year, boom_start=int(boom_start), boom_len=int(boom_len),
              cycle=int(cycle), g_start=g_start, g_end=g_end, g_non=g_non)
@@ -679,14 +684,6 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     st.markdown(
         f"**적합 결과** · 취사/개별난방 {per} 공급량 ~ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
         f"기온 +0.1℃ → **{s01:+.2%}**, +1℃ → **{s10:+.1%}** (연간 물량, 평년 {ref_years[0]}~{ref_years[-1]} 기준)")
-    trends = obs_temp_trends(temp_df)
-    if trends:
-        st.caption("참고(관측): 연평균 기온의 선형 추세 — " + " · ".join(f"{a}~{b}년 {t:+.3f}" for a, b, t in trends) +
-                   f" ℃/년  →  적용값 {rate:g}℃/년. 추세는 어느 기간을 보느냐에 따라 크게 달라집니다.")
-    if not np.isnan(k_slope):
-        st.caption(f"참고(실적): 기온을 보정한 취사/개별난방 물량 추세는 {kk5.index[0]}~{kk5.index[-1]}년 연평균 {np.exp(k_slope) - 1:+.1%}입니다. "
-                   f"활황기·비활황기 증가율은 실적에서 추정한 값이 아니라 **시나리오 가정**입니다.")
-
     # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) ──
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(f"{anchor_year}년 취사/개별난방" + (" (확정)" if scope2 else ""), f"{v5:,.0f}")
@@ -771,7 +768,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         ["난방도일 기준온도(℃) / R²", f"{calib['Tb']:.1f} / {calib['r2']:.3f}"],
         ["기온 +0.1℃ 영향(연간 물량)", f"{s01:+.2%}"],
         ["평년 산정 기간", f"{ref_years[0]}~{ref_years[-1]}"],
-        ["공동주택 활황기", f"{int(boom_start)}년부터 {int(boom_len)}년간, {int(cycle)}년 주기, 증가율 {g_start:.2f}→{g_end:.2f}%/년"],
+        ["공동주택 활황기", f"{int(boom_start)}년부터 {int(boom_len)}년간, {int(cycle)}년 주기, 증가율 {g_start:.2f}~{g_end:.2f}%/년(시작·끝 최저, 중간 최대)"],
         ["비활황기 증가율(%/년)", g_non],
         ["중집난방", "취사/개별난방과 같은 증감 비율(출발연도 대비) 적용"],
     ]
