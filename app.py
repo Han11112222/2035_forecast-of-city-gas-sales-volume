@@ -40,6 +40,7 @@ CONFIRMED_VALUES = {
 }
 
 HH_TITLE_H = 84  # 오른쪽 표 머리글을 왼쪽 표 머리글 높이에 맞추는 제목 영역 높이(px)
+GSHEET_ID = "1gIhArPlLBJ9fwlaqXtZWxiKlSK9hbRuz6HcDw_Yf7Is"  # 월별 상품별 공급량 구글 시트 (취사용·개별난방용 행 사용)
 PLOT_CFG = {"scrollZoom": True, "displaylogo": False}  # 마우스 휠 확대/축소
 
 
@@ -575,6 +576,163 @@ def fit_hdd_model(temp_df, obs_df, level):
     return best
 
 
+def parse_gsheet_household(csv_text: str):
+    """구글 시트 CSV에서 '2018-01' 형식 월 헤더 + '취사용'/'개별난방용' 행을 찾아 월별 합계(GJ) 반환 (시트 단위 MJ)"""
+    raw = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str, keep_default_na=False)
+    pat = re.compile(r"^\s*(\d{4})[-./](\d{1,2})\s*$")
+    hdr = None
+    for i in range(len(raw)):
+        if sum(bool(pat.match(str(v))) for v in raw.iloc[i].values) >= 12:
+            hdr = i
+            break
+    if hdr is None:
+        raise ValueError("월 헤더(예: 2018-01)를 찾지 못했습니다")
+    cols = {j: pat.match(str(v)).groups() for j, v in enumerate(raw.iloc[hdr].values) if pat.match(str(v))}
+
+    def find_row(label):
+        for i in range(hdr + 1, min(len(raw), hdr + 60)):
+            if any(str(v).strip() == label for v in raw.iloc[i, :4].values):
+                return i
+        raise ValueError(f"'{label}' 행을 찾지 못했습니다")
+
+    def num(v):
+        v = str(v).replace(",", "").strip()
+        try:
+            return float(v)
+        except ValueError:
+            return np.nan
+    r_a, r_b = find_row("취사용"), find_row("개별난방용")
+    rows = []
+    for j, (y, m) in cols.items():
+        a, b = num(raw.iat[r_a, j]), num(raw.iat[r_b, j])
+        if np.isnan(a) or np.isnan(b):
+            continue
+        rows.append((int(y), int(m), (a + b) / 1000.0))      # MJ → GJ
+    out = pd.DataFrame(rows, columns=["연", "월", "S"])
+    return out[out["S"] > 0].sort_values(["연", "월"]).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_gsheet_household(sheet_id: str):
+    import requests
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+    r = requests.get(url, timeout=25)
+    r.raise_for_status()
+    return parse_gsheet_household(r.content.decode("utf-8", errors="replace"))
+
+
+def get_household_monthly(sup_b):
+    """월별 취사용+개별난방용 실적: 구글 시트 → (실패 시) 저장소 공급량 실적 엑셀 순서"""
+    try:
+        df = fetch_gsheet_household(GSHEET_ID)
+        if len(df) >= 60:
+            return df, "구글 시트 (취사용+개별난방용)"
+    except Exception:
+        pass
+    if sup_b:
+        return load_household_monthly(sup_b), "저장소 공급량 실적 엑셀 (구글 시트에 연결하지 못함)"
+    return None, ""
+
+
+def render_history_section(y0):
+    """화면 상단: 2018~2025 가정용(취사용+개별난방용) 과거 실적과 추세"""
+    st.subheader("📊 가정용 과거 실적 분석 (취사용+개별난방용)")
+    sup_b = _read_repo_bytes(HH_SUPPLY_FILE)
+    try:
+        mdf, src = get_household_monthly(sup_b)
+    except Exception as e:
+        st.warning(f"과거 실적을 읽지 못했습니다: {e}")
+        return
+    if mdf is None:
+        st.warning("월별 실적 데이터가 없습니다.")
+        return
+    Y0, Y1 = 2018, 2025
+    mdf = mdf[(mdf["연"] >= Y0) & (mdf["연"] <= Y1)]
+    temp_b = _read_repo_bytes(HH_TEMP_FILE)
+    temp_df = load_daily_temp(temp_b) if temp_b else None
+    calib, ref_years, normal = None, None, None
+    if temp_df is not None:
+        try:
+            calib = fit_hdd_model(temp_df, mdf, "월")
+        except Exception:
+            calib = None
+    # 월이 빠진 해는 모델로 보완
+    filled = {}
+    ann = mdf.groupby("연")["S"].sum()
+    cnt = mdf.groupby("연")["S"].count()
+    for y in range(Y0, Y1 + 1):
+        if y in ann.index and cnt[y] < 12:
+            miss = sorted(set(range(1, 13)) - set(mdf[mdf["연"] == y]["월"]))
+            if calib is not None and y in calib["k"].index and temp_df is not None:
+                add = 0.0
+                for m in miss:
+                    d = temp_df[(temp_df["연"] == y) & (temp_df["월"] == m)]
+                    if len(d) == 0:
+                        add = np.nan
+                        break
+                    add += calib["k"][y] * (calib["a"] + calib["b"] * float(np.maximum(0, calib["Tb"] - d["T"]).sum()))
+                if not np.isnan(add):
+                    ann[y] += add
+                    filled[y] = miss
+    ann = ann.reindex(range(Y0, Y1 + 1)).dropna()
+    if len(ann) < 3:
+        st.warning("분석할 연도 데이터가 부족합니다.")
+        return
+    rows = {"연": ann.index.tolist(), "실제": (ann.values / 1e6).tolist()}
+    norm = None
+    if calib is not None:
+        full_y = _full_years(temp_df)
+        ref_years = full_y[-10:]
+        base = season_total(calib, temp_df, ref_years, 0.0)
+        norm = pd.Series({y: calib["k"][y] * base for y in ann.index if y in calib["k"].index})
+        rows["기온보정"] = [norm.get(y, np.nan) / 1e6 for y in ann.index]
+    tbl = pd.DataFrame(rows).set_index("연")
+    a0, a1 = tbl["실제"].iloc[0], tbl["실제"].iloc[-1]
+    n = len(tbl) - 1
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"{tbl.index[0]}년 공급량", f"{a0:,.2f} 백만GJ")
+    c2.metric(f"{tbl.index[-1]}년 공급량", f"{a1:,.2f} 백만GJ", f"{a1 / a0 - 1:+.1%} ({tbl.index[0]}년 대비)")
+    c3.metric("연평균 증감률 (실제)", f"{(a1 / a0) ** (1 / n) - 1:+.2%}")
+    if "기온보정" in tbl and tbl["기온보정"].notna().sum() >= 3:
+        s0, s1 = tbl["기온보정"].dropna().iloc[0], tbl["기온보정"].dropna().iloc[-1]
+        c4.metric("연평균 증감률 (기온 보정)", f"{(s1 / s0) ** (1 / n) - 1:+.2%}", f"{s1 / s0 - 1:+.1%} ({tbl.index[0]}년 대비)")
+    x = tbl.index.values.astype(float)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=tbl.index, y=tbl["실제"], mode="lines+markers+text", name="실제 공급량",
+                             line=dict(color="gray", width=3), text=[f"{v:.1f}" for v in tbl["실제"]], textposition="top center"))
+    allv = list(tbl["실제"].values)
+    if "기온보정" in tbl and tbl["기온보정"].notna().sum() >= 3:
+        fig.add_trace(go.Scatter(x=tbl.index, y=tbl["기온보정"], mode="lines+markers", name="기온 보정 (평년 기온 기준)",
+                                 line=dict(color="black", width=4)))
+        b1, b0 = np.polyfit(x[tbl["기온보정"].notna()], tbl["기온보정"].dropna().values, 1)
+        fig.add_trace(go.Scatter(x=tbl.index, y=b0 + b1 * x, mode="lines", name="기온 보정 추세선",
+                                 line=dict(color="black", width=2, dash="dash")))
+        allv += list(tbl["기온보정"].dropna().values)
+    lo, hi = min(allv), max(allv)
+    pad = (hi - lo) * 0.35 + 0.1
+    fig.update_xaxes(dtick=1, tickformat="d")
+    fig.update_yaxes(title="백만 GJ", tickformat=",.1f", range=[lo - pad, hi + pad])
+    fig.update_layout(height=400, margin=dict(t=60, b=10), legend=dict(orientation="h", y=-0.2),
+                      title=dict(text=f"취사용+개별난방용 연간 공급량 ({tbl.index[0]}∼{tbl.index[-1]}년)", x=0.01, xanchor="left", y=0.95, font=dict(size=15)))
+    show_chart(fig)
+    note = f"자료: {src}. "
+    if filled:
+        note += " / ".join(f"{y}년 {', '.join(str(m) + '월' for m in ms)}은 실적이 없어 기온-공급량 모델로 보완" for y, ms in filled.items()) + ". "
+    note += "기온 보정 = 연도별 기온 영향을 제거하고 평년 기온(최근 10년)으로 환산한 값으로, 기온이 아닌 구조적 증감(고객·사용량 변화)을 보여줍니다."
+    st.caption(note)
+    with st.expander("📋 연도별 표", expanded=False):
+        t = tbl.copy()
+        t["실제 증감"] = t["실제"].pct_change()
+        if "기온보정" in t:
+            t["기온보정 증감"] = t["기온보정"].pct_change()
+        t = t.rename(columns={"실제": "실제(백만GJ)", "기온보정": "기온보정(백만GJ)"})
+        t.index = [f"{i}년" for i in t.index]
+        fm = {c: "{:,.2f}" for c in t.columns if "백만" in c}
+        fm.update({c: "{:+.1%}" for c in t.columns if "증감" in c})
+        st.dataframe(t.style.format(fm, na_rep=""), use_container_width=True)
+    st.markdown("---")
+
+
 def _full_years(temp_df):
     cnt = temp_df.groupby("연").size()
     return [int(y) for y in cnt.index if cnt[y] >= 360]
@@ -717,7 +875,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         if src.startswith("일별"):
             calib = fit_hdd_model(temp_df, daily_df, "일")
         else:
-            obs = load_household_monthly(sup_b)
+            obs, _src = get_household_monthly(sup_b)
             calib = fit_hdd_model(temp_df, obs, "월")
     except Exception as e:
         st.error(f"기온-공급량 관계를 적합하지 못했습니다: {e}")
@@ -946,6 +1104,7 @@ def main():
         hold_tr = st.checkbox("2035년 수준으로 임시 유지", value=True, key="p45_trhold",
                               help="수송용은 담당부서 자료를 받기로 해서, 자료 수령 전까지 2035년 값을 그대로 둡니다. 예측값이 아니라 자리표시입니다. 해제하면 선택한 추세 모델로 계산합니다.")
 
+    render_history_section(y0)
     hh = render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year, scope2)
     # 옵션2: 가정용 기존 계획(anchor+1~base_end)을 시뮬레이션 값으로 대체
     over = {}
