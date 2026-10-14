@@ -623,9 +623,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                                help="기본 0.055 = 2∼010∼2025년 관측 연평균 기온의 선형 추세.".replace("2∼010", "2010"))
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
     trend_slot = half.container()
-    with trend_slot:
-        show_tr = st.toggle("연평균 기온 상승", value=False, key="hh_trend_tbl",
-                            help="관측 연평균 기온의 기간별 선형 추세(℃/년)를 표로 보여줍니다.")
+    show_tr = True  # 기간별 추세 표는 항상 표시
     _g0, _g1 = st.session_state.get("hh_g0", 0.3), st.session_state.get("hh_g1", 0.7)
     st.info(f"- 연평균기온 {rate:g}도 상승 가정\n- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
 
