@@ -788,7 +788,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                               name="확정" if scope2 else "계획/실적", line=dict(color="gray", width=3)))
     for col, nm, colr, dash, w in (("v5_nw", "기온 상승 없음 (신규유입만)", "#2ca02c", "dot", 2),
                                    ("v5_ng", "신규유입 없음 (기온만)", "#ff7f0e", "dot", 2),
-                                   ("v5", "★ 시뮬레이션 (확정안)", "royalblue", "solid", 4)):
+                                   ("v5", "시뮬레이션 (기온+신규유입)", "black", "solid", 4)):
         figA.add_trace(go.Scatter(x=[anchor_year] + years, y=[v5 / M] + list(sim[col].values / M),
                                   mode="lines+markers" if col == "v5" else "lines",
                                   name=nm, line=dict(color=colr, width=w, dash=dash),
@@ -806,7 +806,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     figA.update_layout(height=460, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text="취사/개별난방 물량 (중집난방 제외)", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     figB = go.Figure()
-    for nm, colr, w, yv in (("합계 변화율", "royalblue", 4, (sim["v5"] / v5 - 1) * 100),
+    for nm, colr, w, yv in (("합계 변화율", "black", 4, (sim["v5"] / v5 - 1) * 100),
                             ("기온 효과", "#ff7f0e", 2, (sim["R"] - 1) * 100),
                             ("신규유입 효과", "#2ca02c", 2, (sim["G"] - 1) * 100)):
         figB.add_trace(go.Scatter(x=[anchor_year] + years, y=[0] + list(yv.values), mode="lines+markers", name=nm,
