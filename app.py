@@ -646,8 +646,17 @@ def render_history_section(y0):
     if mdf is None:
         st.warning("월별 실적 데이터가 없습니다.")
         return
-    Y0, Y1 = 2018, 2025
-    mdf = mdf[(mdf["연"] >= Y0) & (mdf["연"] <= Y1)]
+    Y1 = 2025
+    mdf = mdf[mdf["연"] <= Y1]
+    yrs_av = sorted(int(y) for y in mdf["연"].unique())
+    opts = [y for y in yrs_av if y <= Y1 - 3]
+    if not opts:
+        st.warning("분석할 연도 데이터가 부족합니다.")
+        return
+    sel_col, _sp0 = st.columns([1, 2])
+    with sel_col:
+        Y0 = st.selectbox("기준연도 (이 해 대비 증감 비교)", opts, index=opts.index(2018) if 2018 in opts else 0,
+                          key="hist_base_year", help=f"선택한 연도부터 {Y1}년까지의 실적과 추세를 보여줍니다.")
     temp_b = _read_repo_bytes(HH_TEMP_FILE)
     temp_df = load_daily_temp(temp_b) if temp_b else None
     calib, ref_years, normal = None, None, None
