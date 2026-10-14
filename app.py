@@ -25,6 +25,13 @@ st.set_page_config(page_title="공급량 중장기 추정", layout="wide")
 
 TARGET_END = 2045
 PLOT_CFG = {"scrollZoom": True, "displaylogo": False}  # 마우스 휠 확대/축소
+
+
+def show_chart(fig):
+    """휠 확대 + 드래그 = 화면 이동(pan)"""
+    fig.update_layout(dragmode="pan")
+    st.plotly_chart(fig, use_container_width=True, config=PLOT_CFG)
+
 REPO_PLAN_FILE = "2045중장기사업계획.xlsx"
 YEAR_RE = re.compile(r"^\s*(\d{4})\s*년?\s*$")
 TOTAL_LABELS = {"합계", "총합계", "총계"}
@@ -600,6 +607,10 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         apply = st.toggle("✅ 가정용 확정 → 아래 전체 추정에 반영", value=True, key="hh_apply",
                           help="끄면 가정용도 다른 용도처럼 선택한 추세 모델로 계산합니다.")
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
+    trend_slot = st.container()
+    with trend_slot:
+        show_tr = st.toggle("연평균 기온 상승", value=False, key="hh_trend_tbl",
+                            help="관측 연평균 기온의 기간별 선형 추세(℃/년)를 표로 보여줍니다.")
     _g0, _g1 = st.session_state.get("hh_g0", 0.3), st.session_state.get("hh_g1", 0.7)
     st.info(f"- 연평균기온 {rate:g}도 상승 가정\n- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
 
@@ -647,6 +658,11 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     if not calib or calib["b"] <= 0 or calib["a"] <= 0:
         st.error("기온-공급량 관계가 유효하지 않습니다(난방 민감도 ≤ 0). 데이터를 확인해주세요.")
         return out
+
+    if show_tr:
+        with trend_slot:
+            tr_df = pd.DataFrame([(f"{a}∼{b}", f"{t:+.3f}") for a, b, t in obs_temp_trends(temp_df)], columns=["기간", "추세 (℃/년)"])
+            st.table(tr_df.set_index("기간"))
 
     # ── 시나리오 가정 ──
     v5, v6 = float(hist.loc[r5, anchor_year]), float(hist.loc[r6, anchor_year])
@@ -731,8 +747,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     figB.update_yaxes(title=f"{anchor_year}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
     figB.update_layout(height=420, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text=f"{anchor_year}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
-    st.plotly_chart(figA, use_container_width=True, config=PLOT_CFG)
-    st.plotly_chart(figB, use_container_width=True, config=PLOT_CFG)
+    show_chart(figA)
+    show_chart(figB)
     st.caption(f"중집난방은 취사/개별난방과 같은 비율로 증감합니다: {anchor_year}년 {v6:,.0f} → "
                f"2040년 {sim.loc[2040, 'v6']:,.0f} → {TARGET_END}년 {sim.loc[TARGET_END, 'v6']:,.0f} ({sim.loc[TARGET_END, 'v6'] / v6 - 1:+.1%}).")
 
@@ -997,7 +1013,7 @@ def main():
             if y0:
                 fig.update_yaxes(range=[0, ymax / M * 1.15])
             fig.update_layout(height=440, margin=dict(t=20), legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(fig, use_container_width=True, config=PLOT_CFG)
+            show_chart(fig)
             st.caption("Y축을 0부터 표시합니다. 사이드바 '표시 옵션'에서 확대 보기로 바꿀 수 있습니다." if y0
                        else "⚠️ Y축을 확대해서 표시 중입니다. 작은 변화도 크게 보일 수 있습니다.")
 
@@ -1040,7 +1056,7 @@ def main():
             figm.update_layout(height=440, legend=dict(orientation="h", y=-0.25), margin=dict(t=20), yaxis_title="GJ")
             if y0:
                 figm.update_yaxes(range=[0, ymax_c * 1.1])
-            st.plotly_chart(figm, use_container_width=True, config=PLOT_CFG)
+            show_chart(figm)
             if pick == "합계":
                 st.caption("합계는 가정용 확정값과 수송용 임시 유지를 반영한 값이며, 각 모델은 나머지 용도에 적용됩니다.")
             elif pick != "합계" and rr in tr_rows and hold_tr:
@@ -1069,12 +1085,12 @@ def main():
             figl.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="royalblue", opacity=0.07)
             figl.update_xaxes(dtick=2, tickformat="d")
             figl.update_layout(height=480)
-            st.plotly_chart(figl, use_container_width=True, config=PLOT_CFG)
+            show_chart(figl)
             figb = px.bar(long, x="연", y="값", color="용도", category_orders=order, title="연도별 용도 구성 (누적)")
             figb.add_vline(x=base_end + 0.5, line_dash="dash", line_color="royalblue")
             figb.update_xaxes(dtick=2, tickformat="d")
             figb.update_layout(height=460)
-            st.plotly_chart(figb, use_container_width=True, config=PLOT_CFG)
+            show_chart(figb)
 
         with t4:
             table = full.copy()
