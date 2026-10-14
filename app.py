@@ -818,6 +818,10 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                                help="기본 0.117 = 2016∼2025년 관측 연평균 기온의 선형 추세. 아래 표에서 기간별 추세를 확인하세요.")
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
     trend_slot = half.container()
+    with trend_slot:
+        _tc1, _tc2 = st.columns([3, 1])
+        with _tc2:
+            ap_t = st.toggle("적용", value=True, key="hh_ap_t", help="끄면 기온 상승 효과를 반영하지 않습니다.")
     show_tr = True  # 기간별 추세 표는 항상 표시
     # ── 공동주택 신규유입(분양/입주) 요약표 : 기온 표 오른쪽 ──
     _bs = int(st.session_state.get("hh_bs", 2030)); _bl = int(st.session_state.get("hh_bl", 4))
@@ -839,12 +843,20 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         return ["background-color: #FFE699; font-weight: 700; color: #000" if _on[row.name] else "" for _ in row]
     with _sp:
         st.markdown("<div style='height:%dpx;font-weight:600;padding-top:6px'>공동주택 신규유입 물량</div>" % HH_TITLE_H, unsafe_allow_html=True)
+        _nc1, _nc2 = st.columns([3, 1])
+        with _nc2:
+            ap_n = st.toggle("적용", value=True, key="hh_ap_n", help="끄면 공동주택 신규유입(분양/입주) 효과를 반영하지 않습니다.")
         st.table(_tb.style.hide(axis="index").apply(_hl2, axis=1)
                  .set_table_styles([{"selector": "th", "props": [("background-color", "#D9D9D9"), ("color", "#000"), ("font-weight", "700")]}])
                  .set_properties(**{"text-align": "center"}))
         st.caption("▶ 강조된 기간: 공동주택 분양/입주 증가로 신규유입 물량이 늘어나는 기간 (시작·끝 해는 낮고 중간 해가 최대)")
     _g0, _g1 = st.session_state.get("hh_g0", 0.3), st.session_state.get("hh_g1", 0.7)
-    st.info(f"- 연평균기온 {rate:g}도 상승 가정\n- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
+    _lines = []
+    if ap_t:
+        _lines.append(f"- 연평균기온 {rate:g}도 상승 가정")
+    if ap_n:
+        _lines.append(f"- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
+    st.info("\n".join(_lines) if _lines else "- 기온 상승·신규유입 모두 미적용 (출발 연도 값 유지)")
 
     # ── 데이터 ──
     temp_b, sup_b = _read_repo_bytes(HH_TEMP_FILE), _read_repo_bytes(HH_SUPPLY_FILE)
@@ -927,8 +939,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
             n_ref = st.slider("평년 산정 기간 (최근 N년)", 5, min(30, len(full_y)), min(10, len(full_y)), key="hh_ref")
     dT0 = 0.0  # 출발 연도(3개년 롤링 평균 기온)를 평년 수준으로 보고 상승분만 더함
     ref_years = full_y[-n_ref:]
-    p = dict(rate=rate, dT0=dT0, base_year=anchor_year, boom_start=int(boom_start), boom_len=int(boom_len),
-             cycle=int(cycle), g_start=g_start, g_end=g_end, g_non=g_non)
+    p = dict(rate=rate if ap_t else 0.0, dT0=dT0, base_year=anchor_year, boom_start=int(boom_start), boom_len=int(boom_len),
+             cycle=int(cycle), g_start=g_start if ap_n else 0.0, g_end=g_end if ap_n else 0.0, g_non=g_non if ap_n else 0.0)
     years = list(range(anchor_year + 1, TARGET_END + 1))
     sim = simulate_household(v5, v6, years, calib, temp_df, ref_years, p)
 
@@ -1012,7 +1024,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     out["notes"] = [
         ["가정용 기온 시뮬레이션", "적용(확정)" if apply else "미적용"],
         ["추정 범위", f"옵션2: {anchor_year + 1}~{TARGET_END}년 ({anchor_year}년까지 확정)" if scope2 else f"옵션1: {anchor_year + 1}~{TARGET_END}년"],
-        ["연평균 기온 상승(℃/년)", rate],
+        ["기온 상승 적용", f"적용 ({rate:g}℃/년)" if ap_t else "미적용"],
+        ["공동주택 신규유입 적용", "적용" if ap_n else "미적용"],
         ["난방도일 기준온도(℃) / R²", f"{calib['Tb']:.1f} / {calib['r2']:.3f}"],
         ["기온 +0.1℃ 영향(연간 물량)", f"{s01:+.2%}"],
         ["평년 산정 기간", f"{ref_years[0]}~{ref_years[-1]}"],
