@@ -704,13 +704,16 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     if show_tr:
         with trend_slot:
             trs = obs_temp_trends(temp_df)
-            tr_df = pd.DataFrame([(f"{a}∼{b}", f"{t:+.3f}") for a, b, t in trs], columns=["기간", "추세 (℃/년)"]).set_index("기간")
+            tr_df = pd.DataFrame([(f"{a}∼{b}", f"{t:+.3f}") for a, b, t in trs], columns=["기간", "추세 (℃/년)"])
             hit = [abs(t - rate) < 0.0005 for _, _, t in trs]  # 적용 중인 값과 같은 기간을 강조
 
             def _hl(row):
-                on = hit[list(tr_df.index).index(row.name)]
+                on = hit[row.name]
                 return ["background-color: #FFE699; font-weight: 700; color: #000" if on else "" for _ in row]
-            st.table(tr_df.style.apply(_hl, axis=1))
+            sty_tr = (tr_df.style.hide(axis="index").apply(_hl, axis=1)
+                      .set_table_styles([{"selector": "th", "props": [("background-color", "#D9D9D9"), ("color", "#000"), ("font-weight", "700")]}])
+                      .set_properties(**{"text-align": "center"}))
+            st.table(sty_tr)
             if any(hit):
                 st.caption("▶ 강조된 기간의 추세를 적용했습니다.")
 
