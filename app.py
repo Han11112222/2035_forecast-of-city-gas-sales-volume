@@ -24,6 +24,7 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="공급량 중장기 추정", layout="wide")
 
 TARGET_END = 2045
+PLOT_CFG = {"scrollZoom": True, "displaylogo": False}  # 마우스 휠 확대/축소
 REPO_PLAN_FILE = "2045중장기사업계획.xlsx"
 YEAR_RE = re.compile(r"^\s*(\d{4})\s*년?\s*$")
 TOTAL_LABELS = {"합계", "총합계", "총계"}
@@ -599,10 +600,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         apply = st.toggle("✅ 가정용 확정 → 아래 전체 추정에 반영", value=True, key="hh_apply",
                           help="끄면 가정용도 다른 용도처럼 선택한 추세 모델로 계산합니다.")
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
-    st.info(f"**(연평균 기온 {rate:g}도 상승 가정)**  일 기온 → 난방도일 → 공급량 관계를 실적으로 적합해 기온 효과를 계산하고, "
-            f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {anchor_year + 1}∼{TARGET_END}년 **취사/개별난방** 물량을 산정합니다. "
-            f"출발점은 {start_txt}이며, **중집난방은 취사/개별난방과 같은 증감 비율**을 따라갑니다. "
-            f"기온 상승은 {anchor_year + 1}년부터 적용되며, 출발 연도 기온은 3개년 롤링 평균(평년 수준)으로 봅니다.")
+    _g0, _g1 = st.session_state.get("hh_g0", 0.3), st.session_state.get("hh_g1", 0.7)
+    st.info(f"- 연평균기온 {rate:g}도 상승 가정\n- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
 
     # ── 데이터 ──
     temp_b, sup_b = _read_repo_bytes(HH_TEMP_FILE), _read_repo_bytes(HH_SUPPLY_FILE)
@@ -695,17 +694,12 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         st.caption(f"{base_end}년 취사/개별난방: 시뮬레이션 {sim.loc[base_end, 'v5']:,.0f} vs 기존 계획 {plan_end:,.0f} "
                    f"({sim.loc[base_end, 'v5'] / plan_end - 1:+.1%}) — 옵션2에서는 {anchor_year + 1}∼{base_end}년 기존 계획값이 시뮬레이션 값으로 대체됩니다.")
 
-    hy_a = [y for y in hy if y <= anchor_year]
+    hy_a = [y for y in hy if 2026 <= y <= anchor_year]
     hist5 = hist.loc[r5, hy_a].astype(float)
     M = 1e6
     figA = go.Figure()
     figA.add_trace(go.Scatter(x=hist5.index, y=hist5.values / M, mode="lines+markers",
                               name="확정" if scope2 else "계획/실적", line=dict(color="gray", width=3)))
-    if scope2 and anchor_year < base_end:
-        old_y = [y for y in hy if anchor_year <= y <= base_end]
-        old = hist.loc[r5, old_y].astype(float)
-        figA.add_trace(go.Scatter(x=old_y, y=old.values / M, mode="lines", name="기존 계획 (참고)",
-                                  line=dict(color="#7f7f7f", width=2, dash="dash")))
     for col, nm, colr, dash, w in (("v5_nw", "기온 상승 없음 (신규유입만)", "#2ca02c", "dot", 2),
                                    ("v5_ng", "신규유입 없음 (기온만)", "#ff7f0e", "dot", 2),
                                    ("v5", "★ 시뮬레이션 (확정안)", "royalblue", "solid", 4)):
@@ -713,7 +707,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                                   mode="lines+markers" if col == "v5" else "lines",
                                   name=nm, line=dict(color=colr, width=w, dash=dash),
                                   hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
-    figA.add_vrect(x0=anchor_year + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
+    figA.add_vrect(x0=anchor_year + 0.5, x1=TARGET_END + 0.5, fillcolor="royalblue", opacity=0.07,
                    annotation_text="시뮬레이션", annotation_position="inside top")
     figA.update_xaxes(dtick=2, tickformat="d")
     figA.update_yaxes(title="백만 GJ", tickformat=",.1f")
@@ -737,8 +731,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     figB.update_yaxes(title=f"{anchor_year}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
     figB.update_layout(height=420, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text=f"{anchor_year}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
-    st.plotly_chart(figA, use_container_width=True)
-    st.plotly_chart(figB, use_container_width=True)
+    st.plotly_chart(figA, use_container_width=True, config=PLOT_CFG)
+    st.plotly_chart(figB, use_container_width=True, config=PLOT_CFG)
     st.caption(f"중집난방은 취사/개별난방과 같은 비율로 증감합니다: {anchor_year}년 {v6:,.0f} → "
                f"2040년 {sim.loc[2040, 'v6']:,.0f} → {TARGET_END}년 {sim.loc[TARGET_END, 'v6']:,.0f} ({sim.loc[TARGET_END, 'v6'] / v6 - 1:+.1%}).")
 
@@ -973,7 +967,7 @@ def main():
 
         with t1:
             M = 1e6
-            hist_tot = tot[[y for y in tot.index if y <= base_end]]
+            hist_tot = tot[[y for y in tot.index if 2026 <= y <= base_end]]
             sel = tot[[y for y in tot.index if y >= base_end]]
             label_years = {hist_tot.index[0], base_end, 2040, TARGET_END}
             fig = go.Figure()
@@ -996,14 +990,14 @@ def main():
                 line=dict(color="royalblue", width=4), textposition="top center",
                 text=[f"{v / M:.1f}" if y in label_years else "" for y, v in sel.items()],
                 hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
-            fig.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
+            fig.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="royalblue", opacity=0.07,
                           annotation_text="추세 예측", annotation_position="inside top")
             fig.update_xaxes(dtick=2, tickformat="d")
             fig.update_yaxes(title="백만 GJ", tickformat=",.0f" if y0 else ",.1f")
             if y0:
                 fig.update_yaxes(range=[0, ymax / M * 1.15])
             fig.update_layout(height=440, margin=dict(t=20), legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOT_CFG)
             st.caption("Y축을 0부터 표시합니다. 사이드바 '표시 옵션'에서 확대 보기로 바꿀 수 있습니다." if y0
                        else "⚠️ Y축을 확대해서 표시 중입니다. 작은 변화도 크게 보일 수 있습니다.")
 
@@ -1041,12 +1035,12 @@ def main():
                 figm.add_trace(go.Scatter(x=[base_end] + list(range(base_end + 1, TARGET_END + 1)), y=[series[-1]] + list(hv),
                                           mode="lines+markers", name="★ 가정용 기온 시뮬레이션 (확정)",
                                           line=dict(color="black", width=4)))
-            figm.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
+            figm.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="royalblue", opacity=0.07)
             figm.update_xaxes(dtick=2, tickformat="d")
             figm.update_layout(height=440, legend=dict(orientation="h", y=-0.25), margin=dict(t=20), yaxis_title="GJ")
             if y0:
                 figm.update_yaxes(range=[0, ymax_c * 1.1])
-            st.plotly_chart(figm, use_container_width=True)
+            st.plotly_chart(figm, use_container_width=True, config=PLOT_CFG)
             if pick == "합계":
                 st.caption("합계는 가정용 확정값과 수송용 임시 유지를 반영한 값이며, 각 모델은 나머지 용도에 적용됩니다.")
             elif pick != "합계" and rr in tr_rows and hold_tr:
@@ -1057,6 +1051,7 @@ def main():
 
         with t3:
             long = full.reset_index().melt(id_vars="index", var_name="연", value_name="값").rename(columns={"index": "용도"})
+            long = long[long["연"] >= 2026]
             long["구분"] = np.where(long["연"] <= base_end, "계획/실적", "추세예측")
             bridge = long[long["연"] == base_end].copy()
             bridge["구분"] = "추세예측"
@@ -1071,15 +1066,15 @@ def main():
                 long_l["표시값"], ylab = long_l["값"], "GJ"
             figl = px.line(long_l, x="연", y="표시값", color="용도", line_dash="구분", markers=True,
                            category_orders=order, labels={"표시값": ylab})
-            figl.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
+            figl.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="royalblue", opacity=0.07)
             figl.update_xaxes(dtick=2, tickformat="d")
             figl.update_layout(height=480)
-            st.plotly_chart(figl, use_container_width=True)
+            st.plotly_chart(figl, use_container_width=True, config=PLOT_CFG)
             figb = px.bar(long, x="연", y="값", color="용도", category_orders=order, title="연도별 용도 구성 (누적)")
-            figb.add_vline(x=base_end + 0.5, line_dash="dash", line_color="green")
+            figb.add_vline(x=base_end + 0.5, line_dash="dash", line_color="royalblue")
             figb.update_xaxes(dtick=2, tickformat="d")
             figb.update_layout(height=460)
-            st.plotly_chart(figb, use_container_width=True)
+            st.plotly_chart(figb, use_container_width=True, config=PLOT_CFG)
 
         with t4:
             table = full.copy()
