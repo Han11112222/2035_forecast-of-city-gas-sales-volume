@@ -653,6 +653,30 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
     trend_slot = half.container()
     show_tr = True  # 기간별 추세 표는 항상 표시
+    # ── 공동주택 신규유입(분양/입주) 요약표 : 기온 표 오른쪽 ──
+    _bs = int(st.session_state.get("hh_bs", 2030)); _bl = int(st.session_state.get("hh_bl", 4))
+    _cy = int(st.session_state.get("hh_cy", 10)); _lo = st.session_state.get("hh_g0", 0.3)
+    _hi = st.session_state.get("hh_g1", 0.7); _gn = st.session_state.get("hh_gn", 0.0)
+    _rows, _cur = [], None
+    for _y in range(anchor_year + 1, TARGET_END + 1):
+        _b = _y >= _bs and (_y - _bs) % _cy < _bl
+        if _cur is None or _cur[2] != _b:
+            _cur = [_y, _y, _b]; _rows.append(_cur)
+        else:
+            _cur[1] = _y
+    _tb = pd.DataFrame([(f"{a}∼{b}", "분양/입주 증가 예상" if on else ("평시 (증가 없음)" if _gn == 0 else "평시 (소폭 증가)"),
+                         f"+{_lo:g}∼{_hi:g}%/년" if on else f"+{_gn:g}%/년") for a, b, on in _rows],
+                       columns=["기간", "공동주택 분양/입주", "신규유입 증가율"])
+    _on = [r[2] for r in _rows]
+
+    def _hl2(row):
+        return ["background-color: #FFE699; font-weight: 700; color: #000" if _on[row.name] else "" for _ in row]
+    with _sp:
+        st.markdown("**공동주택 신규유입 물량**")
+        st.table(_tb.style.hide(axis="index").apply(_hl2, axis=1)
+                 .set_table_styles([{"selector": "th", "props": [("background-color", "#D9D9D9"), ("color", "#000"), ("font-weight", "700")]}])
+                 .set_properties(**{"text-align": "center"}))
+        st.caption("▶ 강조된 기간: 공동주택 분양/입주 증가로 신규유입 물량이 늘어나는 기간 (시작·끝 해는 낮고 중간 해가 최대)")
     _g0, _g1 = st.session_state.get("hh_g0", 0.3), st.session_state.get("hh_g1", 0.7)
     st.info(f"- 연평균기온 {rate:g}도 상승 가정\n- 공동주택 신규유입 {_g0:g}%∼{_g1:g}% 반영")
 
@@ -724,14 +748,14 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         a1, a2, a3 = st.columns(3)
         with a1:
             boom_start = st.number_input("활황 시작 연도", 2026, 2045, 2030, 1, key="hh_bs")
-            boom_len = st.number_input("활황 기간 (년)", 1, 10, 6, 1, key="hh_bl", help="2030∼2035 = 6년")
+            boom_len = st.number_input("활황 기간 (년)", 1, 10, 4, 1, key="hh_bl", help="2030∼2033 = 4년")
             cycle = st.number_input("반복 주기 (년)", 5, 20, 10, 1, key="hh_cy", help="10년 주기 → 2040∼2045 재활황")
         with a2:
             g_start = st.number_input("활황기 증가율 최저 — 시작·끝 해 (%/년)", 0.0, 3.0, 0.3, 0.05, format="%.2f", key="hh_g0",
                                       help="활황기 첫 해와 마지막 해의 증가율. 중간으로 갈수록 커집니다.")
             g_end = st.number_input("활황기 증가율 최대 — 중간 해 (%/년)", 0.0, 3.0, 0.7, 0.05, format="%.2f", key="hh_g1",
                                     help="활황기 가운데 해의 증가율(종 모양으로 변함).")
-            g_non = st.number_input("비활황기 증가율 (%/년)", -3.0, 3.0, 0.2, 0.05, format="%.2f", key="hh_gn",
+            g_non = st.number_input("비활황기 증가율 (%/년)", -3.0, 3.0, 0.0, 0.05, format="%.2f", key="hh_gn",
                                     help="기온이 같을 때 신규 공동주택 유입으로 생기는 소폭 증가분(가정값).")
         with a3:
             n_ref = st.slider("평년 산정 기간 (최근 N년)", 5, min(30, len(full_y)), min(10, len(full_y)), key="hh_ref")
