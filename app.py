@@ -593,25 +593,24 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     c1, c2 = st.columns([1, 2])
     with c1:
         rate = st.number_input("연평균 기온 상승 (℃/년)", 0.0, 0.5, 0.055, 0.005, format="%.3f", key="hh_rate",
-                               help="기본 0.055 = 2010~2025년 관측 연평균 기온의 선형 추세. 아래 '적합 결과'에 기간별 관측 추세가 표시됩니다.")
+                               help="기본 0.055 = 2010∼2025년 관측 연평균 기온의 선형 추세. 아래 '적합 결과'에 기간별 관측 추세가 표시됩니다.")
     with c2:
         st.write("")
         apply = st.toggle("✅ 가정용 확정 → 아래 전체 추정에 반영", value=True, key="hh_apply",
                           help="끄면 가정용도 다른 용도처럼 선택한 추세 모델로 계산합니다.")
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
     st.info(f"**(연평균 기온 {rate:g}도 상승 가정)**  일 기온 → 난방도일 → 공급량 관계를 실적으로 적합해 기온 효과를 계산하고, "
-            f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {anchor_year + 1}~{TARGET_END}년 **취사/개별난방** 물량을 산정합니다. "
+            f"공동주택 신규유입(활황·비활황 주기) 증가율을 더해 {anchor_year + 1}∼{TARGET_END}년 **취사/개별난방** 물량을 산정합니다. "
             f"출발점은 {start_txt}이며, **중집난방은 취사/개별난방과 같은 증감 비율**을 따라갑니다. "
             f"기온 상승은 {anchor_year + 1}년부터 적용되며, 출발 연도 기온은 3개년 롤링 평균(평년 수준)으로 봅니다.")
 
     # ── 데이터 ──
     temp_b, sup_b = _read_repo_bytes(HH_TEMP_FILE), _read_repo_bytes(HH_SUPPLY_FILE)
-    with st.expander("📂 기온·공급량 데이터 (기본: 저장소 파일 사용)", expanded=temp_b is None or sup_b is None):
-        u_t = st.file_uploader("일 평균기온 엑셀 (기온_198001_202512.xlsx)", type=["xlsx"], key="hh_up_t")
-        u_s = st.file_uploader("월별 공급량 실적 엑셀 (공급량실적_계획_실적_MJ.xlsx, 취사용·개별난방용 열 사용)", type=["xlsx"], key="hh_up_s")
-        u_d = st.file_uploader("(선택) 일별 기온-공급량 시트 내보내기 (일자·공급량(MJ)·평균기온, csv/xlsx)",
-                               type=["xlsx", "csv"], key="hh_up_d",
-                               help="구글 시트를 CSV/엑셀로 내려받아 올리면 일 단위 관계로 보정할 수 있습니다. 공급량 열이 취사/개별난방(가정용) 기준이어야 합니다.")
+    u_t = u_s = u_d = None
+    if temp_b is None or sup_b is None:
+        with st.expander("📂 기온·공급량 데이터 (저장소에 파일이 없어 업로드가 필요합니다)", expanded=True):
+            u_t = st.file_uploader("일 평균기온 엑셀 (기온_198001_202512.xlsx)", type=["xlsx"], key="hh_up_t")
+            u_s = st.file_uploader("월별 공급량 실적 엑셀 (공급량실적_계획_실적_MJ.xlsx)", type=["xlsx"], key="hh_up_s")
     temp_b = u_t.getvalue() if u_t is not None else temp_b
     sup_b = u_s.getvalue() if u_s is not None else sup_b
     try:
@@ -657,8 +656,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
         a1, a2, a3 = st.columns(3)
         with a1:
             boom_start = st.number_input("활황 시작 연도", 2026, 2045, 2030, 1, key="hh_bs")
-            boom_len = st.number_input("활황 기간 (년)", 1, 10, 6, 1, key="hh_bl", help="2030~2035 = 6년")
-            cycle = st.number_input("반복 주기 (년)", 5, 20, 10, 1, key="hh_cy", help="10년 주기 → 2040~2045 재활황")
+            boom_len = st.number_input("활황 기간 (년)", 1, 10, 6, 1, key="hh_bl", help="2030∼2035 = 6년")
+            cycle = st.number_input("반복 주기 (년)", 5, 20, 10, 1, key="hh_cy", help="10년 주기 → 2040∼2045 재활황")
         with a2:
             g_start = st.number_input("활황기 증가율 최저 — 시작·끝 해 (%/년)", 0.0, 3.0, 0.3, 0.05, format="%.2f", key="hh_g0",
                                       help="활황기 첫 해와 마지막 해의 증가율. 중간으로 갈수록 커집니다.")
@@ -682,8 +681,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     k_slope = np.polyfit(kk5.index.values, np.log(kk5.values), 1)[0] if len(kk5) >= 3 else np.nan
     per = "월" if calib["level"] == "월" else "일"
     st.markdown(
-        f"**적합 결과** · 취사/개별난방 {per} 공급량 ~ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
-        f"기온 +0.1℃ → **{s01:+.2%}**, +1℃ → **{s10:+.1%}** (연간 물량, 평년 {ref_years[0]}~{ref_years[-1]} 기준)")
+        f"**적합 결과** · 취사/개별난방 {per} 공급량 ∼ 난방도일(기준 {calib['Tb']:.1f}℃)  |  R² = **{calib['r2']:.3f}** (n={calib['n']:,})  |  "
+        f"기온 +0.1℃ → **{s01:+.2%}**, +1℃ → **{s10:+.1%}** (연간 물량, 평년 {ref_years[0]}∼{ref_years[-1]} 기준)")
     # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) ──
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(f"{anchor_year}년 취사/개별난방" + (" (확정)" if scope2 else ""), f"{v5:,.0f}")
@@ -694,7 +693,7 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     if scope2 and anchor_year < base_end:
         plan_end = float(hist.loc[r5, base_end])
         st.caption(f"{base_end}년 취사/개별난방: 시뮬레이션 {sim.loc[base_end, 'v5']:,.0f} vs 기존 계획 {plan_end:,.0f} "
-                   f"({sim.loc[base_end, 'v5'] / plan_end - 1:+.1%}) — 옵션2에서는 {anchor_year + 1}~{base_end}년 기존 계획값이 시뮬레이션 값으로 대체됩니다.")
+                   f"({sim.loc[base_end, 'v5'] / plan_end - 1:+.1%}) — 옵션2에서는 {anchor_year + 1}∼{base_end}년 기존 계획값이 시뮬레이션 값으로 대체됩니다.")
 
     hy_a = [y for y in hy if y <= anchor_year]
     hist5 = hist.loc[r5, hy_a].astype(float)
@@ -718,9 +717,13 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                    annotation_text="시뮬레이션", annotation_position="inside top")
     figA.update_xaxes(dtick=2, tickformat="d")
     figA.update_yaxes(title="백만 GJ", tickformat=",.1f")
-    if y0:
-        figA.update_yaxes(range=[0, max(hist5.max(), sim["v5"].max(), sim["v5_nw"].max()) / M * 1.15])
-    figA.update_layout(height=430, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
+    # Y축: 기존(0부터) 대비 변화가 약 2.5배 크게 보이도록 범위를 좁힘
+    allv = np.concatenate([hist5.values, sim[["v5", "v5_nw", "v5_ng"]].values.ravel()]) / M
+    span_old = allv.max() * 1.15
+    half = max(span_old / 2.5 / 2, (allv.max() - allv.min()) * 0.6)
+    mid = (allv.max() + allv.min()) / 2
+    figA.update_yaxes(range=[mid - half, mid + half])
+    figA.update_layout(height=460, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text="취사/개별난방 물량 (중집난방 제외)", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     figB = go.Figure()
     for nm, colr, w, yv in (("합계 변화율", "royalblue", 4, (sim["v5"] / v5 - 1) * 100),
@@ -730,12 +733,12 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
                                   line=dict(color=colr, width=w), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
     figB.add_hline(y=0, line_color="gray", line_width=1)
     figB.update_xaxes(dtick=2, tickformat="d")
-    figB.update_yaxes(title=f"{anchor_year}년 대비 (%)", ticksuffix="%")
-    figB.update_layout(height=430, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
+    ymax = max(10.0, 1.6 * max(abs((sim["R"] - 1) * 100).max(), abs((sim["G"] - 1) * 100).max(), abs((sim["v5"] / v5 - 1) * 100).max()))
+    figB.update_yaxes(title=f"{anchor_year}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
+    figB.update_layout(height=420, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text=f"{anchor_year}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
-    g1, g2 = st.columns(2)
-    g1.plotly_chart(figA, use_container_width=True)
-    g2.plotly_chart(figB, use_container_width=True)
+    st.plotly_chart(figA, use_container_width=True)
+    st.plotly_chart(figB, use_container_width=True)
     st.caption(f"중집난방은 취사/개별난방과 같은 비율로 증감합니다: {anchor_year}년 {v6:,.0f} → "
                f"2040년 {sim.loc[2040, 'v6']:,.0f} → {TARGET_END}년 {sim.loc[TARGET_END, 'v6']:,.0f} ({sim.loc[TARGET_END, 'v6'] / v6 - 1:+.1%}).")
 
@@ -818,7 +821,7 @@ def main():
     # ── 추정 범위 (옵션1/2) ──
     opt_lbl = [f"옵션1 : {base_end + 1}~{TARGET_END}년까지 추정", "옵션2 : 2030~2045년까지 추정"]
     scope_sel = st.radio("추정 범위", opt_lbl, horizontal=True, key="p45_scope",
-                         help="옵션1: 기존 계획(~2035) 유지 후 2036년부터 추정. 옵션2: 확정 연도 이후(2030년~)를 가정용 기온 시뮬레이션으로 다시 추정합니다.")
+                         help="옵션1: 기존 계획(∼2035) 유지 후 2036년부터 추정. 옵션2: 확정 연도 이후(2030년∼)를 가정용 기온 시뮬레이션으로 다시 추정합니다.")
     scope2 = scope_sel == opt_lbl[1]
     anchor_year = base_end
     if scope2:
@@ -826,8 +829,8 @@ def main():
         anchor_year = st.number_input("확정 마지막 연도 (이 해까지는 확정, 다음 해부터 추정)", min_value=min(cands_y), max_value=max(cands_y),
                                       value=2029 if 2029 in cands_y else max(cands_y), step=1, key="p45_conf")
         anchor_year = int(anchor_year)
-        st.caption(f"✔ {anchor_year}년까지 확정. 가정용(취사/개별·중집)은 {anchor_year + 1}~{base_end}년 기존 계획 대신 기온 시뮬레이션 값을 사용하고, "
-                   f"그 외 용도는 {anchor_year + 1}~{base_end}년 기존 계획을 유지한 채 {base_end + 1}년부터 추세 모델로 추정합니다.")
+        st.caption(f"✔ {anchor_year}년까지 확정. 가정용(취사/개별·중집)은 {anchor_year + 1}∼{base_end}년 기존 계획 대신 기온 시뮬레이션 값을 사용하고, "
+                   f"그 외 용도는 {anchor_year + 1}∼{base_end}년 기존 계획을 유지한 채 {base_end + 1}년부터 추세 모델로 추정합니다.")
 
     # ── 사이드바: 추세 옵션 ──
     with st.sidebar:
@@ -839,10 +842,10 @@ def main():
         default_start = 2029 if 2029 in start_opts else start_opts[0]
         train_start = st.select_slider(
             "학습 시작 연도", options=start_opts, value=default_start, key="p45_start",
-            help="이 연도부터 {}년까지의 값으로 모델을 학습합니다. 기본 2029년 = 추세로 작성된 구간(2026~2028 확정계획의 설비 증설 등 단절 구간 제외)".format(base_end))
+            help="이 연도부터 {}년까지의 값으로 모델을 학습합니다. 기본 2029년 = 추세로 작성된 구간(2026∼2028 확정계획의 설비 증설 등 단절 구간 제외)".format(base_end))
         anchor = st.checkbox(f"{base_end}년 값에서 이어붙이기", value=True, key="p45_anchor",
                              help="모델선과 마지막 해 값의 차이만큼 평행이동해서 2036년에 값이 갑자기 튀지 않게 합니다.")
-        st.caption(f"학습 구간: {train_start}~{base_end}년 ({base_end - train_start + 1}개 점)")
+        st.caption(f"학습 구간: {train_start}∼{base_end}년 ({base_end - train_start + 1}개 점)")
         st.markdown("---")
         st.header("🖼️ 표시 옵션")
         y0 = st.checkbox("Y축을 0부터 표시", value=True, key="p45_y0",
@@ -863,58 +866,65 @@ def main():
                 hist.loc[r, y] = v
         layout = dict(layout, hist=hist)
 
-    st.markdown(f"#### 나머지 용도 추세 모델: {mlabel}")
-    st.info(MODEL_DESC[gm])
-
-    # ── [추가 옵션] 기울기 직접 조정 ──
-    adv = st.toggle("⚙️ 추가 옵션 (기울기 직접 조정)", value=False, key="p45_adv",
-                    help="모델이 추정한 증감 추세의 기울기를 시나리오 가정으로 직접 조정합니다. 꺼두면 모델 추정값 그대로입니다.")
-    mult_pct, phi = 100, 1.0
-    if adv:
-        a1, a2 = st.columns(2)
-        with a1:
-            mult_pct = st.slider("기울기 배율 (%)", 0, 200, 100, 5, key="p45_mult",
-                                 help="100% = 모델 추정 그대로, 50% = 연간 증감폭을 절반으로, 0% = 증감 없음(보합), 150% = 1.5배 가파르게")
-        with a2:
-            phi = st.slider("감쇠계수", 0.50, 1.00, 1.00, 0.01, key="p45_phi",
-                            help="1.00 = 적용 안 함. 0.90이면 매년 증감폭이 전년의 90%로 줄어듭니다(매년 10%씩 감소).")
-        st.caption("⚠️ 이 값은 모델이 데이터에서 추정한 것이 아니라 **사용자가 정하는 시나리오 가정**입니다. "
-                   "엑셀의 '2045확장_적용내역' 시트에 함께 기록됩니다.")
-
-    # ── 용도별 모델/기울기 개별 지정 ──
-    seed = []
-    for r in layout["data_rows"]:
-        if np.isnan(hist.loc[r, hy].values.astype(float)).all():
-            continue
-        row = {"행": r, "용도": labels[r], "모델": FOLLOW_GLOBAL}
-        if adv:
-            row["기울기 배율(%)"] = np.nan
-            row["직접 증감률(%/년)"] = np.nan
-        seed.append(row)
-    col_cfg = {"모델": st.column_config.SelectboxColumn("모델", options=[FOLLOW_GLOBAL] + list(MODELS)),
-               "행": st.column_config.NumberColumn("엑셀 행", width="small")}
-    if adv:
-        col_cfg["기울기 배율(%)"] = st.column_config.NumberColumn(
-            "기울기 배율(%)", min_value=0, max_value=300, step=5, format="%.0f",
-            help="비워두면 위의 전체 배율을 따릅니다")
-        col_cfg["직접 증감률(%/년)"] = st.column_config.NumberColumn(
-            "직접 증감률(%/년)", step=0.1, format="%.2f",
-            help="입력하면 모델 대신 '마지막 값 × (1+증감률)^t'로 계산합니다 (예: -0.5)")
-    with st.expander("🔧 용도별로 다른 모델 / 기울기 적용 (선택)", expanded=False):
-        st.caption("용도마다 흐름이 다르므로 필요하면 모델을 따로 지정하세요. 아래 '모델 비교'에서 용도별 결과를 먼저 볼 수 있습니다."
-                   + (" 기울기 배율·직접 증감률은 비워두면 적용되지 않습니다." if adv else " 기울기는 위의 '추가 옵션'을 켜면 용도별로도 조정할 수 있습니다."))
-        edited = st.data_editor(
-            pd.DataFrame(seed), hide_index=True, use_container_width=True, disabled=["행", "용도"],
-            column_config=col_cfg, key=f"p45_ed_{sheet}_{int(adv)}")
+    st.markdown("---")
+    other = st.toggle("🔎 타용도 분석 (가정용 외 용도의 추세 모델·결과 그래프 보기)", value=False, key="p45_other",
+                      help="켜면 가정용 외 용도의 추세 모델 선택, 기울기 조정, 합계·용도별 그래프와 상세표가 나타납니다. 꺼도 엑셀 다운로드에는 현재 설정이 그대로 반영됩니다.")
+    adv, mult_pct, phi = False, 100, 1.0
     row_model, row_mult, row_rate = {}, {}, {}
-    for _, rw in edited.iterrows():
-        r = int(rw["행"])
-        row_model[r] = None if rw["모델"] == FOLLOW_GLOBAL else MODELS[rw["모델"]]
+    if other:
+        st.markdown(f"#### 나머지 용도 추세 모델: {mlabel}")
+        st.info(MODEL_DESC[gm])
+
+        # ── [추가 옵션] 기울기 직접 조정 ──
+        adv = st.toggle("⚙️ 추가 옵션 (기울기 직접 조정)", value=False, key="p45_adv",
+                        help="모델이 추정한 증감 추세의 기울기를 시나리오 가정으로 직접 조정합니다. 꺼두면 모델 추정값 그대로입니다.")
+        mult_pct, phi = 100, 1.0
         if adv:
-            if pd.notna(rw.get("기울기 배율(%)")):
-                row_mult[r] = float(rw["기울기 배율(%)"])
-            if pd.notna(rw.get("직접 증감률(%/년)")):
-                row_rate[r] = float(rw["직접 증감률(%/년)"])
+            a1, a2 = st.columns(2)
+            with a1:
+                mult_pct = st.slider("기울기 배율 (%)", 0, 200, 100, 5, key="p45_mult",
+                                     help="100% = 모델 추정 그대로, 50% = 연간 증감폭을 절반으로, 0% = 증감 없음(보합), 150% = 1.5배 가파르게")
+            with a2:
+                phi = st.slider("감쇠계수", 0.50, 1.00, 1.00, 0.01, key="p45_phi",
+                                help="1.00 = 적용 안 함. 0.90이면 매년 증감폭이 전년의 90%로 줄어듭니다(매년 10%씩 감소).")
+            st.caption("⚠️ 이 값은 모델이 데이터에서 추정한 것이 아니라 **사용자가 정하는 시나리오 가정**입니다. "
+                       "엑셀의 '2045확장_적용내역' 시트에 함께 기록됩니다.")
+
+        # ── 용도별 모델/기울기 개별 지정 ──
+        seed = []
+        for r in layout["data_rows"]:
+            if np.isnan(hist.loc[r, hy].values.astype(float)).all():
+                continue
+            row = {"행": r, "용도": labels[r], "모델": FOLLOW_GLOBAL}
+            if adv:
+                row["기울기 배율(%)"] = np.nan
+                row["직접 증감률(%/년)"] = np.nan
+            seed.append(row)
+        col_cfg = {"모델": st.column_config.SelectboxColumn("모델", options=[FOLLOW_GLOBAL] + list(MODELS)),
+                   "행": st.column_config.NumberColumn("엑셀 행", width="small")}
+        if adv:
+            col_cfg["기울기 배율(%)"] = st.column_config.NumberColumn(
+                "기울기 배율(%)", min_value=0, max_value=300, step=5, format="%.0f",
+                help="비워두면 위의 전체 배율을 따릅니다")
+            col_cfg["직접 증감률(%/년)"] = st.column_config.NumberColumn(
+                "직접 증감률(%/년)", step=0.1, format="%.2f",
+                help="입력하면 모델 대신 '마지막 값 × (1+증감률)^t'로 계산합니다 (예: -0.5)")
+        with st.expander("🔧 용도별로 다른 모델 / 기울기 적용 (선택)", expanded=False):
+            st.caption("용도마다 흐름이 다르므로 필요하면 모델을 따로 지정하세요. 아래 '모델 비교'에서 용도별 결과를 먼저 볼 수 있습니다."
+                       + (" 기울기 배율·직접 증감률은 비워두면 적용되지 않습니다." if adv else " 기울기는 위의 '추가 옵션'을 켜면 용도별로도 조정할 수 있습니다."))
+            edited = st.data_editor(
+                pd.DataFrame(seed), hide_index=True, use_container_width=True, disabled=["행", "용도"],
+                column_config=col_cfg, key=f"p45_ed_{sheet}_{int(adv)}")
+        row_model, row_mult, row_rate = {}, {}, {}
+        for _, rw in edited.iterrows():
+            r = int(rw["행"])
+            row_model[r] = None if rw["모델"] == FOLLOW_GLOBAL else MODELS[rw["모델"]]
+            if adv:
+                if pd.notna(rw.get("기울기 배율(%)")):
+                    row_mult[r] = float(rw["기울기 배율(%)"])
+                if pd.notna(rw.get("직접 증감률(%/년)")):
+                    row_rate[r] = float(rw["직접 증감률(%/년)"])
+
 
     tr_rows = [r for r in layout["data_rows"] if "수송" in labels[r]]
 
@@ -945,141 +955,143 @@ def main():
     full = pd.concat([hist.loc[rows, hy], proj.loc[rows]], axis=1)
     full.index = [labels[r] for r in rows]
     tot = full.sum()
-    warn = {r: n for r, n in notes.items() if not n.startswith("직접")}
-    if warn:
-        st.warning("⚠️ " + " / ".join(f"{labels[r]}: {n}" for r, n in warn.items()))
+    if other:
+        warn = {r: n for r, n in notes.items() if not n.startswith("직접")}
+        if warn:
+            st.warning("⚠️ " + " / ".join(f"{labels[r]}: {n}" for r, n in warn.items()))
 
-    # ── 결과 요약 ──
-    st.markdown("### 결과")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"{base_end}년 합계", f"{tot[base_end]:,.0f}")
-    k2.metric("2040년 합계", f"{tot[2040]:,.0f}", f"{tot[2040] / tot[base_end] - 1:+.1%}")
-    k3.metric(f"{TARGET_END}년 합계", f"{tot[TARGET_END]:,.0f}", f"{tot[TARGET_END] / tot[base_end] - 1:+.1%}")
-    k4.metric(f"연평균 증감률 ({base_end}→{TARGET_END})",
-              f"{(tot[TARGET_END] / tot[base_end]) ** (1 / (TARGET_END - base_end)) - 1:+.2%}")
+        # ── 결과 요약 ──
+        st.markdown("### 결과")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(f"{base_end}년 합계", f"{tot[base_end]:,.0f}")
+        k2.metric("2040년 합계", f"{tot[2040]:,.0f}", f"{tot[2040] / tot[base_end] - 1:+.1%}")
+        k3.metric(f"{TARGET_END}년 합계", f"{tot[TARGET_END]:,.0f}", f"{tot[TARGET_END] / tot[base_end] - 1:+.1%}")
+        k4.metric(f"연평균 증감률 ({base_end}→{TARGET_END})",
+                  f"{(tot[TARGET_END] / tot[base_end]) ** (1 / (TARGET_END - base_end)) - 1:+.2%}")
 
-    t1, t2, t3, t4 = st.tabs(["📈 합계 추이", "🧪 모델 비교 (용도별)", "🧱 용도별 추이", "📋 연도별 상세표"])
+        t1, t2, t3, t4 = st.tabs(["📈 합계 추이", "🧪 모델 비교 (용도별)", "🧱 용도별 추이", "📋 연도별 상세표"])
 
-    with t1:
-        M = 1e6
-        hist_tot = tot[[y for y in tot.index if y <= base_end]]
-        sel = tot[[y for y in tot.index if y >= base_end]]
-        label_years = {hist_tot.index[0], base_end, 2040, TARGET_END}
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=hist_tot.index, y=hist_tot.values / M, mode="lines+markers+text", name="계획/실적",
-            line=dict(color="gray", width=3), textposition="top center",
-            text=[f"{v / M:.1f}" if y in label_years else "" for y, v in hist_tot.items()],
-            hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
-        ymax = max(hist_tot.max(), tot.max())
-        if adjusted:
-            t0 = proj0.loc[rows].sum(axis=0)
-            ymax = max(ymax, t0.max())
+        with t1:
+            M = 1e6
+            hist_tot = tot[[y for y in tot.index if y <= base_end]]
+            sel = tot[[y for y in tot.index if y >= base_end]]
+            label_years = {hist_tot.index[0], base_end, 2040, TARGET_END}
+            fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=[base_end] + list(t0.index), y=[hist_tot[base_end] / M] + list(t0.values / M), mode="lines",
-                name=f"{mlabel} (조정 전)", line=dict(color="gray", width=2, dash="dot"),
+                x=hist_tot.index, y=hist_tot.values / M, mode="lines+markers+text", name="계획/실적",
+                line=dict(color="gray", width=3), textposition="top center",
+                text=[f"{v / M:.1f}" if y in label_years else "" for y, v in hist_tot.items()],
                 hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
-        fig.add_trace(go.Scatter(
-            x=sel.index, y=sel.values / M, mode="lines+markers+text",
-            name=f"{mlabel}" + (" (기울기 조정)" if adjusted else ""),
-            line=dict(color="royalblue", width=4), textposition="top center",
-            text=[f"{v / M:.1f}" if y in label_years else "" for y, v in sel.items()],
-            hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
-        fig.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
-                      annotation_text="추세 예측", annotation_position="inside top")
-        fig.update_xaxes(dtick=2, tickformat="d")
-        fig.update_yaxes(title="백만 GJ", tickformat=",.0f" if y0 else ",.1f")
-        if y0:
-            fig.update_yaxes(range=[0, ymax / M * 1.15])
-        fig.update_layout(height=440, margin=dict(t=20), legend=dict(orientation="h", y=-0.2))
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Y축을 0부터 표시합니다. 사이드바 '표시 옵션'에서 확대 보기로 바꿀 수 있습니다." if y0
-                   else "⚠️ Y축을 확대해서 표시 중입니다. 작은 변화도 크게 보일 수 있습니다.")
+            ymax = max(hist_tot.max(), tot.max())
+            if adjusted:
+                t0 = proj0.loc[rows].sum(axis=0)
+                ymax = max(ymax, t0.max())
+                fig.add_trace(go.Scatter(
+                    x=[base_end] + list(t0.index), y=[hist_tot[base_end] / M] + list(t0.values / M), mode="lines",
+                    name=f"{mlabel} (조정 전)", line=dict(color="gray", width=2, dash="dot"),
+                    hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
+            fig.add_trace(go.Scatter(
+                x=sel.index, y=sel.values / M, mode="lines+markers+text",
+                name=f"{mlabel}" + (" (기울기 조정)" if adjusted else ""),
+                line=dict(color="royalblue", width=4), textposition="top center",
+                text=[f"{v / M:.1f}" if y in label_years else "" for y, v in sel.items()],
+                hovertemplate="%{x}년: %{y:,.2f} 백만GJ<extra></extra>"))
+            fig.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05,
+                          annotation_text="추세 예측", annotation_position="inside top")
+            fig.update_xaxes(dtick=2, tickformat="d")
+            fig.update_yaxes(title="백만 GJ", tickformat=",.0f" if y0 else ",.1f")
+            if y0:
+                fig.update_yaxes(range=[0, ymax / M * 1.15])
+            fig.update_layout(height=440, margin=dict(t=20), legend=dict(orientation="h", y=-0.2))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Y축을 0부터 표시합니다. 사이드바 '표시 옵션'에서 확대 보기로 바꿀 수 있습니다." if y0
+                       else "⚠️ Y축을 확대해서 표시 중입니다. 작은 변화도 크게 보일 수 있습니다.")
 
-    with t2:
-        st.caption("용도를 고르면 6개 모델의 예측을 한 화면에서 비교합니다. 검증오차는 학습 구간의 마지막 3개 연도를 가리고 예측했을 때의 평균 오차율로, "
-                   "값이 작을수록 최근 흐름을 잘 맞춘 모델입니다. (점이 적어 참고용이며, 계획값 자체가 추세로 작성된 구간이라 '계획과의 일치도'로 이해하세요.) 이 탭은 추가 옵션 적용 전 모델 원본 값입니다.")
-        pick = st.selectbox("용도", ["합계"] + [labels[r] for r in rows], key="p45_pick")
-        if pick == "합계":
-            series = hist.loc[rows, hy].sum(axis=0).values.astype(float)
-        else:
-            rr = [r for r in rows if labels[r] == pick][0]
-            series = hist.loc[rr, hy].values.astype(float)
-        figm = go.Figure()
-        figm.add_trace(go.Scatter(x=hy, y=series, mode="lines+markers", name="계획/실적",
-                                  line=dict(color="gray", width=3)))
-        recs, ymax_c = [], float(np.nanmax(series))
-        for lab, key in MODELS.items():
+        with t2:
+            st.caption("용도를 고르면 6개 모델의 예측을 한 화면에서 비교합니다. 검증오차는 학습 구간의 마지막 3개 연도를 가리고 예측했을 때의 평균 오차율로, "
+                       "값이 작을수록 최근 흐름을 잘 맞춘 모델입니다. (점이 적어 참고용이며, 계획값 자체가 추세로 작성된 구간이라 '계획과의 일치도'로 이해하세요.) 이 탭은 추가 옵션 적용 전 모델 원본 값입니다.")
+            pick = st.selectbox("용도", ["합계"] + [labels[r] for r in rows], key="p45_pick")
             if pick == "합계":
-                pm, _, _ = build_projection(layout, key, train_start, anchor, {})
-                pm, _ = finalize(pm, {})
-                p = pm.loc[rows].sum(axis=0).values
+                series = hist.loc[rows, hy].sum(axis=0).values.astype(float)
             else:
-                p, _ = project(hy, series, TARGET_END - base_end, key, train_start, anchor)
-            ymax_c = max(ymax_c, float(np.nanmax(p)))
-            fy = list(range(base_end + 1, TARGET_END + 1))
-            figm.add_trace(go.Scatter(x=[base_end] + fy, y=[series[-1]] + list(p), mode="lines",
-                                      name=lab, line=dict(width=4 if key == gm else 1.8)))
-            mape = backtest_mape(hy, series, key, train_start, anchor)
-            recs.append({"모델": lab, "2040년": p[4], f"{TARGET_END}년": p[-1],
-                         f"{TARGET_END}년 vs {base_end}년": p[-1] / series[-1] - 1 if series[-1] else np.nan,
-                         "검증오차(MAPE)": mape})
-        if pick != "합계" and rr in hh["rows"] and hh["apply"]:
-            hv = hh["rows"][rr].reindex(range(base_end + 1, TARGET_END + 1)).values
-            ymax_c = max(ymax_c, float(np.nanmax(hv)))
-            figm.add_trace(go.Scatter(x=[base_end] + list(range(base_end + 1, TARGET_END + 1)), y=[series[-1]] + list(hv),
-                                      mode="lines+markers", name="★ 가정용 기온 시뮬레이션 (확정)",
-                                      line=dict(color="black", width=4)))
-        figm.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
-        figm.update_xaxes(dtick=2, tickformat="d")
-        figm.update_layout(height=440, legend=dict(orientation="h", y=-0.25), margin=dict(t=20), yaxis_title="GJ")
-        if y0:
-            figm.update_yaxes(range=[0, ymax_c * 1.1])
-        st.plotly_chart(figm, use_container_width=True)
-        if pick == "합계":
-            st.caption("합계는 가정용 확정값과 수송용 임시 유지를 반영한 값이며, 각 모델은 나머지 용도에 적용됩니다.")
-        elif pick != "합계" and rr in tr_rows and hold_tr:
-            st.caption("수송용은 담당부서 자료 수령 전까지 2035년 수준을 임시로 유지 중이라 최종 결과에는 아래 모델선이 쓰이지 않습니다.")
-        st.dataframe(pd.DataFrame(recs).set_index("모델").style.format(
-            {"2040년": "{:,.0f}", f"{TARGET_END}년": "{:,.0f}", f"{TARGET_END}년 vs {base_end}년": "{:+.1%}",
-             "검증오차(MAPE)": "{:.1%}"}, na_rep="-"), use_container_width=True)
+                rr = [r for r in rows if labels[r] == pick][0]
+                series = hist.loc[rr, hy].values.astype(float)
+            figm = go.Figure()
+            figm.add_trace(go.Scatter(x=hy, y=series, mode="lines+markers", name="계획/실적",
+                                      line=dict(color="gray", width=3)))
+            recs, ymax_c = [], float(np.nanmax(series))
+            for lab, key in MODELS.items():
+                if pick == "합계":
+                    pm, _, _ = build_projection(layout, key, train_start, anchor, {})
+                    pm, _ = finalize(pm, {})
+                    p = pm.loc[rows].sum(axis=0).values
+                else:
+                    p, _ = project(hy, series, TARGET_END - base_end, key, train_start, anchor)
+                ymax_c = max(ymax_c, float(np.nanmax(p)))
+                fy = list(range(base_end + 1, TARGET_END + 1))
+                figm.add_trace(go.Scatter(x=[base_end] + fy, y=[series[-1]] + list(p), mode="lines",
+                                          name=lab, line=dict(width=4 if key == gm else 1.8)))
+                mape = backtest_mape(hy, series, key, train_start, anchor)
+                recs.append({"모델": lab, "2040년": p[4], f"{TARGET_END}년": p[-1],
+                             f"{TARGET_END}년 vs {base_end}년": p[-1] / series[-1] - 1 if series[-1] else np.nan,
+                             "검증오차(MAPE)": mape})
+            if pick != "합계" and rr in hh["rows"] and hh["apply"]:
+                hv = hh["rows"][rr].reindex(range(base_end + 1, TARGET_END + 1)).values
+                ymax_c = max(ymax_c, float(np.nanmax(hv)))
+                figm.add_trace(go.Scatter(x=[base_end] + list(range(base_end + 1, TARGET_END + 1)), y=[series[-1]] + list(hv),
+                                          mode="lines+markers", name="★ 가정용 기온 시뮬레이션 (확정)",
+                                          line=dict(color="black", width=4)))
+            figm.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
+            figm.update_xaxes(dtick=2, tickformat="d")
+            figm.update_layout(height=440, legend=dict(orientation="h", y=-0.25), margin=dict(t=20), yaxis_title="GJ")
+            if y0:
+                figm.update_yaxes(range=[0, ymax_c * 1.1])
+            st.plotly_chart(figm, use_container_width=True)
+            if pick == "합계":
+                st.caption("합계는 가정용 확정값과 수송용 임시 유지를 반영한 값이며, 각 모델은 나머지 용도에 적용됩니다.")
+            elif pick != "합계" and rr in tr_rows and hold_tr:
+                st.caption("수송용은 담당부서 자료 수령 전까지 2035년 수준을 임시로 유지 중이라 최종 결과에는 아래 모델선이 쓰이지 않습니다.")
+            st.dataframe(pd.DataFrame(recs).set_index("모델").style.format(
+                {"2040년": "{:,.0f}", f"{TARGET_END}년": "{:,.0f}", f"{TARGET_END}년 vs {base_end}년": "{:+.1%}",
+                 "검증오차(MAPE)": "{:.1%}"}, na_rep="-"), use_container_width=True)
 
-    with t3:
-        long = full.reset_index().melt(id_vars="index", var_name="연", value_name="값").rename(columns={"index": "용도"})
-        long["구분"] = np.where(long["연"] <= base_end, "계획/실적", "추세예측")
-        bridge = long[long["연"] == base_end].copy()
-        bridge["구분"] = "추세예측"
-        long_l = pd.concat([long, bridge], ignore_index=True)
-        order = {"용도": list(full.index)}
-        as_idx = st.checkbox(f"{base_end}년 = 100 지수로 보기 (용도별 규모 차이가 클 때 추천)", value=True, key="p45_idx")
-        if as_idx:
-            basev = long[long["연"] == base_end].set_index("용도")["값"]
-            long_l["표시값"] = long_l.apply(lambda x: x["값"] / basev[x["용도"]] * 100 if basev[x["용도"]] else np.nan, axis=1)
-            ylab = f"{base_end}년=100"
-        else:
-            long_l["표시값"], ylab = long_l["값"], "GJ"
-        figl = px.line(long_l, x="연", y="표시값", color="용도", line_dash="구분", markers=True,
-                       category_orders=order, labels={"표시값": ylab})
-        figl.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
-        figl.update_xaxes(dtick=2, tickformat="d")
-        figl.update_layout(height=480)
-        st.plotly_chart(figl, use_container_width=True)
-        figb = px.bar(long, x="연", y="값", color="용도", category_orders=order, title="연도별 용도 구성 (누적)")
-        figb.add_vline(x=base_end + 0.5, line_dash="dash", line_color="green")
-        figb.update_xaxes(dtick=2, tickformat="d")
-        figb.update_layout(height=460)
-        st.plotly_chart(figb, use_container_width=True)
+        with t3:
+            long = full.reset_index().melt(id_vars="index", var_name="연", value_name="값").rename(columns={"index": "용도"})
+            long["구분"] = np.where(long["연"] <= base_end, "계획/실적", "추세예측")
+            bridge = long[long["연"] == base_end].copy()
+            bridge["구분"] = "추세예측"
+            long_l = pd.concat([long, bridge], ignore_index=True)
+            order = {"용도": list(full.index)}
+            as_idx = st.checkbox(f"{base_end}년 = 100 지수로 보기 (용도별 규모 차이가 클 때 추천)", value=True, key="p45_idx")
+            if as_idx:
+                basev = long[long["연"] == base_end].set_index("용도")["값"]
+                long_l["표시값"] = long_l.apply(lambda x: x["값"] / basev[x["용도"]] * 100 if basev[x["용도"]] else np.nan, axis=1)
+                ylab = f"{base_end}년=100"
+            else:
+                long_l["표시값"], ylab = long_l["값"], "GJ"
+            figl = px.line(long_l, x="연", y="표시값", color="용도", line_dash="구분", markers=True,
+                           category_orders=order, labels={"표시값": ylab})
+            figl.add_vrect(x0=base_end + 0.5, x1=TARGET_END + 0.5, fillcolor="green", opacity=0.05)
+            figl.update_xaxes(dtick=2, tickformat="d")
+            figl.update_layout(height=480)
+            st.plotly_chart(figl, use_container_width=True)
+            figb = px.bar(long, x="연", y="값", color="용도", category_orders=order, title="연도별 용도 구성 (누적)")
+            figb.add_vline(x=base_end + 0.5, line_dash="dash", line_color="green")
+            figb.update_xaxes(dtick=2, tickformat="d")
+            figb.update_layout(height=460)
+            st.plotly_chart(figb, use_container_width=True)
 
-    with t4:
-        table = full.copy()
-        table.loc["합계"] = tot
-        table.loc["전년 대비 증감"] = tot.pct_change()
-        table.columns = [f"{y}년" + ("" if y <= base_end else " ▶") for y in table.columns]
-        num_rows = [i for i in table.index if i != "전년 대비 증감"]
-        sty = table.style.format("{:,.0f}", subset=pd.IndexSlice[num_rows, :], na_rep="")
-        sty = sty.format("{:+.2%}", subset=pd.IndexSlice[["전년 대비 증감"], :], na_rep="")
-        st.dataframe(sty, use_container_width=True)
-        st.caption(f"▶ 표시는 {base_end}년 이후 예측 값입니다. 가정용은 기온 시뮬레이션(확정 시), 수송용은 임시 유지, 나머지는 선택한 추세 모델입니다.")
+        with t4:
+            table = full.copy()
+            table.loc["합계"] = tot
+            table.loc["전년 대비 증감"] = tot.pct_change()
+            table.columns = [f"{y}년" + ("" if y <= base_end else " ▶") for y in table.columns]
+            num_rows = [i for i in table.index if i != "전년 대비 증감"]
+            sty = table.style.format("{:,.0f}", subset=pd.IndexSlice[num_rows, :], na_rep="")
+            sty = sty.format("{:+.2%}", subset=pd.IndexSlice[["전년 대비 증감"], :], na_rep="")
+            st.dataframe(sty, use_container_width=True)
+            st.caption(f"▶ 표시는 {base_end}년 이후 예측 값입니다. 가정용은 기온 시뮬레이션(확정 시), 수송용은 임시 유지, 나머지는 선택한 추세 모델입니다.")
+
 
     # ── 엑셀 다운로드 ──
     st.markdown("### 엑셀 다운로드")
