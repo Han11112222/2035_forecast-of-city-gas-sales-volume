@@ -814,8 +814,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     apply = True  # 가정용 시뮬레이션은 항상 전체 추정에 반영
     half, _sp = st.columns([1, 1])
     with half:
-        rate = st.number_input("연평균 기온 상승 (℃/년)", 0.0, 0.5, 0.055, 0.005, format="%.3f", key="hh_rate",
-                               help="기본 0.055 = 2∼010∼2025년 관측 연평균 기온의 선형 추세.".replace("2∼010", "2010"))
+        rate = st.number_input("연평균 기온 상승 (℃/년)", 0.0, 0.5, 0.117, 0.005, format="%.3f", key="hh_rate",
+                               help="기본 0.117 = 2016∼2025년 관측 연평균 기온의 선형 추세. 아래 표에서 기간별 추세를 확인하세요.")
     start_txt = f"{anchor_year}년 {'확정' if scope2 else '계획'}값"
     trend_slot = half.container()
     show_tr = True  # 기간별 추세 표는 항상 표시
