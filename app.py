@@ -701,10 +701,10 @@ def render_history_section(y0):
     fig.add_trace(go.Scatter(x=tbl.index, y=tbl["실제"], mode="lines+markers+text", name="실제 공급량",
                              line=dict(color="black", width=4), text=[f"{v:.1f}" for v in tbl["실제"]], textposition="top center"))
     allv = list(tbl["실제"].values)
-    if "기온보정" in tbl and tbl["기온보정"].notna().sum() >= 3:
-        fig.add_trace(go.Scatter(x=tbl.index, y=tbl["기온보정"], mode="lines+markers", name="기온 보정 (평년 기온 기준)",
-                                 line=dict(color="gray", width=3)))
-        allv += list(tbl["기온보정"].dropna().values)
+    b1, b0 = np.polyfit(x, tbl["실제"].values, 1)
+    fig.add_trace(go.Scatter(x=tbl.index, y=b0 + b1 * x, mode="lines", name="공급량 추세선",
+                             line=dict(color="black", width=2, dash="dash")))
+    allv += list(b0 + b1 * x)
     lo, hi = min(allv), max(allv)
     pad = (hi - lo) * 0.35 + 0.1
     fig.update_xaxes(dtick=1, tickformat="d")
