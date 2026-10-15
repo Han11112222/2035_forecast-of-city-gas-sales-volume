@@ -1151,10 +1151,10 @@ def render_final_summary():
         hovertemplate="%{x}<br>%{text} GJ<extra></extra>"))
     fig.update_layout(
         height=520, showlegend=False, margin=dict(l=10, r=10, t=30, b=10), plot_bgcolor="white",
-        yaxis=dict(range=[lo - 0.30 * span, hi + 0.20 * span], tickformat=",", gridcolor="#e6e9ee", title="GJ (축 일부 생략)"),
+        yaxis=dict(range=[0, hi * 1.24], tickformat=",", gridcolor="#e6e9ee", title="GJ"),
         xaxis=dict(showgrid=False))
     arrow, word = ("▼", "감소") if diff < 0 else ("▲", "증가")
-    fig.add_annotation(x=x[-1], y=hi + 0.13 * span, xanchor="center", showarrow=False,
+    fig.add_annotation(x=x[-1], y=hi * 1.13, xanchor="center", showarrow=False,
                        text=f"<b>[{arrow} {abs(diff):,.0f} {word}]</b><br><span style='font-size:17px;color:#4b5563'>{by}년 대비 {v1 / v0:.1%}</span>",
                        font=dict(size=21, color="#c0392b" if diff < 0 else "#1e7e34"))
     show_chart(fig)
