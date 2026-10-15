@@ -958,8 +958,8 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     k1.metric(f"{ref_y}년 취사/개별난방" + (" (확정)" if ref_y <= anchor_year else ""), f"{v_ref:,.0f}")
     k2.metric("2040년", f"{sim.loc[2040, 'v5']:,.0f}", f"{sim.loc[2040, 'v5'] / v_ref - 1:+.1%}")
     k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'v5']:,.0f}", f"{sim.loc[TARGET_END, 'v5'] / v_ref - 1:+.1%}")
-    k4.metric(f"기온 / 신규유입 효과 ({anchor_year}→{TARGET_END})",
-              f"{sim.loc[TARGET_END, 'R'] - 1:+.1%} / {sim.loc[TARGET_END, 'G'] - 1:+.1%}")
+    k4.metric(f"{TARGET_END}년 기온만 / 신규유입만 ({ref_y}년 대비)",
+              f"{sim.loc[TARGET_END, 'v5_ng'] / v_ref - 1:+.1%} / {sim.loc[TARGET_END, 'v5_nw'] / v_ref - 1:+.1%}")
     M = 1e6
     figA = go.Figure()
     figA.add_trace(go.Scatter(x=hist5.index, y=hist5.values / M, mode="lines+markers",
@@ -988,13 +988,13 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     tot_y = list((hist5.values / v_ref - 1) * 100) + list((sim["v5"].values / v_ref - 1) * 100)
     figB.add_trace(go.Scatter(x=tot_x, y=tot_y, mode="lines+markers", name="합계 변화율",
                               line=dict(color="black", width=4), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
-    for nm, colr, yv in ((f"기온 효과 ({anchor_year}년 이후)", "#ff7f0e", (sim["R"] - 1) * 100),
-                         (f"신규유입 효과 ({anchor_year}년 이후)", "#2ca02c", (sim["G"] - 1) * 100)):
-        figB.add_trace(go.Scatter(x=[anchor_year] + years, y=[0] + list(yv.values), mode="lines+markers", name=nm,
+    for nm, colr, yv in (("기온만 적용", "#ff7f0e", (sim["v5_ng"].values / v_ref - 1) * 100),
+                         ("신규유입만 적용", "#2ca02c", (sim["v5_nw"].values / v_ref - 1) * 100)):
+        figB.add_trace(go.Scatter(x=[anchor_year] + years, y=[(v5 / v_ref - 1) * 100] + list(yv), mode="lines+markers", name=nm,
                                   line=dict(color=colr, width=2), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
     figB.add_hline(y=0, line_color="gray", line_width=1)
     figB.update_xaxes(dtick=2, tickformat="d")
-    ymax = max(10.0, 1.6 * max(abs((sim["R"] - 1) * 100).max(), abs((sim["G"] - 1) * 100).max(), max(abs(v) for v in tot_y)))
+    ymax = max(10.0, 1.6 * max(abs(sim["v5_ng"] / v_ref - 1).max() * 100, abs(sim["v5_nw"] / v_ref - 1).max() * 100, max(abs(v) for v in tot_y)))
     figB.update_yaxes(title=f"{ref_y}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
     figB.update_layout(height=420, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text=f"{ref_y}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
