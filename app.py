@@ -1093,7 +1093,7 @@ def parse_final_workbook(data: bytes):
 def render_final_summary():
     st.markdown("---")
     st.markdown("### 📊 전체 공급량 요약 보기")
-    up = st.file_uploader("최종 확정 공급량 엑셀 업로드 (2026∼2045, 시트 맨 오른쪽/보이는 시트 사용)", type=["xlsx"], key="fin_up",
+    up = st.file_uploader("최종 확정 공급량 엑셀 업로드 (2026∼2045)", type=["xlsx"], key="fin_up",
                           help="담당부서 자료까지 반영해 확정한 전체 공급량 엑셀입니다. '구 분' 행에 연도, 아래로 용도별 행과 '합계' 행이 있는 형식이면 됩니다.")
     if up is None:
         st.caption("엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 폭포수 차트가 나타납니다.")
@@ -1144,19 +1144,19 @@ def render_final_summary():
     lo, hi = min(lv), max(lv)
     span = max(hi - lo, hi * 0.01)
     fig = go.Figure(go.Waterfall(
-        x=x, y=ys, measure=meas, text=txt, textposition="outside", textfont=dict(size=12),
+        x=x, y=ys, measure=meas, text=txt, textposition="outside", textfont=dict(size=18, color="#1f2937"),
         connector=dict(line=dict(color="#aab2bd", width=1, dash="dot")),
         increasing=dict(marker=dict(color="#f2b179")), decreasing=dict(marker=dict(color="#9dc3e6")),
         totals=dict(marker=dict(color="#1f3a5f")),
         hovertemplate="%{x}<br>%{text} GJ<extra></extra>"))
     fig.update_layout(
-        height=470, showlegend=False, margin=dict(l=10, r=10, t=30, b=10), plot_bgcolor="white",
-        yaxis=dict(range=[lo - 0.30 * span, hi + 0.14 * span], tickformat=",", gridcolor="#e6e9ee", title="GJ (축 일부 생략)"),
+        height=520, showlegend=False, margin=dict(l=10, r=10, t=30, b=10), plot_bgcolor="white",
+        yaxis=dict(range=[lo - 0.30 * span, hi + 0.20 * span], tickformat=",", gridcolor="#e6e9ee", title="GJ (축 일부 생략)"),
         xaxis=dict(showgrid=False))
     arrow, word = ("▼", "감소") if diff < 0 else ("▲", "증가")
-    fig.add_annotation(x=x[-1], y=hi + 0.10 * span, xanchor="center", showarrow=False,
-                       text=f"<b>[{arrow} {abs(diff):,.0f} {word}]</b><br><span style='font-size:11px;color:#6b7280'>{by}년 대비 {v1 / v0:.1%}</span>",
-                       font=dict(size=13, color="#c0392b" if diff < 0 else "#1e7e34"))
+    fig.add_annotation(x=x[-1], y=hi + 0.13 * span, xanchor="center", showarrow=False,
+                       text=f"<b>[{arrow} {abs(diff):,.0f} {word}]</b><br><span style='font-size:17px;color:#4b5563'>{by}년 대비 {v1 / v0:.1%}</span>",
+                       font=dict(size=21, color="#c0392b" if diff < 0 else "#1e7e34"))
     show_chart(fig)
 
     with st.expander("📋 용도별 상세표"):
@@ -1172,9 +1172,7 @@ def main():
 
     # ── 데이터 파일 (저장소 파일 우선, 필요 시 교체) ──
     repo_path = _repo_plan_path()
-    with st.sidebar:
-        st.header("📂 데이터")
-        up = st.file_uploader("다른 엑셀로 계산하려면 업로드 (선택)", type=["xlsx"], key="p45_up")
+    up = None  # 계획 엑셀은 저장소 파일을 사용 (사이드바 업로드 제거)
     if up is not None:
         data, src_name = up.getvalue(), up.name
     elif repo_path:
