@@ -1040,6 +1040,132 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     return out
 
 
+# ─────────────────────────────────────────────────────────
+# 최종 확정 공급량 요약 (별도 엑셀 업로드 → 폭포수 차트)
+# ─────────────────────────────────────────────────────────
+FIN_GROUPS = {  # 심플버전 묶음
+    "가정용": ["주택용_취사/개별난방", "주택용_중집난방"],
+    "산업용": ["산업용"],
+    "수송용": ["수송용(BIO포함)"],
+    "연료전지": ["연료전지용"],
+}
+
+
+@st.cache_data(show_spinner=False)
+def parse_final_workbook(data: bytes):
+    """최종 확정 엑셀 → (용도별 연도 표, 합계 행, 시트명). 보이는 시트 중 마지막 시트를 사용"""
+    wb = load_workbook(io.BytesIO(data), data_only=True)
+    vis = [w for w in wb.worksheets if w.sheet_state == "visible"] or wb.worksheets
+    ws = vis[-1]
+    hdr = None
+    for r in range(1, 15):
+        ys = {c: int(YEAR_RE.match(str(ws.cell(r, c).value)).group(1))
+              for c in range(1, ws.max_column + 1)
+              if ws.cell(r, c).value is not None and YEAR_RE.match(str(ws.cell(r, c).value))}
+        if len(ys) >= 5:
+            hdr = (r, ys)
+            break
+    if hdr is None:
+        raise ValueError("연도 머리글(2026년, 2027년 …)을 찾지 못했습니다.")
+    hr, ycols = hdr
+    lab_col = min(ycols) - 1
+    while lab_col > 1 and ws.cell(hr, lab_col).value is None:
+        lab_col -= 1
+    rows, total = {}, None
+    for r in range(hr + 1, ws.max_row + 1):
+        lab = ws.cell(r, lab_col).value
+        if lab is None:
+            continue
+        lab = str(lab).strip()
+        vals = {y: ws.cell(r, c).value for c, y in ycols.items()}
+        vals = {y: float(v) for y, v in vals.items() if isinstance(v, (int, float))}
+        if lab in TOTAL_LABELS:
+            total = pd.Series(vals).sort_index()
+            break
+        if vals:
+            rows[lab] = vals
+    if not rows:
+        raise ValueError("용도별 행을 찾지 못했습니다.")
+    df = pd.DataFrame(rows).T.sort_index(axis=1)
+    return df, total, ws.title
+
+
+def render_final_summary():
+    st.markdown("---")
+    st.markdown("### 📊 전체 공급량 요약 보기")
+    up = st.file_uploader("최종 확정 공급량 엑셀 업로드 (2026∼2045, 시트 맨 오른쪽/보이는 시트 사용)", type=["xlsx"], key="fin_up",
+                          help="담당부서 자료까지 반영해 확정한 전체 공급량 엑셀입니다. '구 분' 행에 연도, 아래로 용도별 행과 '합계' 행이 있는 형식이면 됩니다.")
+    if up is None:
+        st.caption("엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 폭포수 차트가 나타납니다.")
+        return
+    try:
+        df, total, sheet = parse_final_workbook(up.getvalue())
+    except Exception as e:
+        st.error(f"파일을 읽지 못했습니다: {e}")
+        return
+    df = df.fillna(0.0)
+    years = [int(y) for y in df.columns]
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
+    by = c1.selectbox("기준연도", years, index=0, key="fin_by")
+    ty = c2.selectbox("대상연도", [y for y in years if y != by], index=len([y for y in years if y != by]) - 1, key="fin_ty")
+    simple = c3.toggle("심플버전", value=True, key="fin_simple", help="켜면 가정용·산업용·수송용·연료전지·기타로 묶어서, 끄면 용도별로 모두 보여줍니다.")
+    c4.caption(f"자료: 업로드 엑셀 '{sheet}' 시트 · 단위 GJ")
+
+    d = (df[ty] - df[by])
+    if simple:
+        used = set()
+        items = []
+        for g, members in FIN_GROUPS.items():
+            m = [x for x in members if x in d.index]
+            used.update(m)
+            items.append((g, float(d[m].sum()) if m else 0.0))
+        rest = [x for x in d.index if x not in used]
+        items.append(("기타", float(d[rest].sum())))
+    else:
+        items = [(k, float(v)) for k, v in d.items() if abs(v) > 0 or df.loc[k, by] != 0 or df.loc[k, ty] != 0]
+    v0, v1 = float(df[by].sum()), float(df[ty].sum())
+    diff = v1 - v0
+    if total is not None and by in total.index and ty in total.index and abs(total[by] - v0) > 1:
+        st.warning(f"용도별 행의 합({v0:,.0f})이 엑셀 '합계'({total[by]:,.0f})와 다릅니다. 용도별 합을 기준으로 그렸습니다.")
+
+    k1, k2, _ = st.columns([1, 1, 1])
+    k1.metric(f"① {by} 확정", f"{v0:,.0f} GJ")
+    k2.metric(f"② {ty} 확정", f"{v1:,.0f} GJ", f"{diff:+,.0f} ({v1 / v0:.1%})")
+
+    st.markdown(f"#### ① {by}년 대비 {ty}년 용도별 증감 폭포수")
+    x = [f"{by}년 확정"] + [k for k, _ in items] + [f"{ty}년 확정"]
+    meas = ["absolute"] + ["relative"] * len(items) + ["total"]
+    ys = [v0] + [v for _, v in items] + [v1]
+    txt = [f"{v0:,.0f}"] + [f"{v:+,.0f}" for _, v in items] + [f"{v1:,.0f}"]
+    lv, run = [v0, v1], v0
+    for _, v in items:
+        run += v
+        lv.append(run)
+    lo, hi = min(lv), max(lv)
+    span = max(hi - lo, hi * 0.01)
+    fig = go.Figure(go.Waterfall(
+        x=x, y=ys, measure=meas, text=txt, textposition="outside", textfont=dict(size=12),
+        connector=dict(line=dict(color="#aab2bd", width=1, dash="dot")),
+        increasing=dict(marker=dict(color="#f2b179")), decreasing=dict(marker=dict(color="#9dc3e6")),
+        totals=dict(marker=dict(color="#1f3a5f")),
+        hovertemplate="%{x}<br>%{text} GJ<extra></extra>"))
+    fig.update_layout(
+        height=470, showlegend=False, margin=dict(l=10, r=10, t=30, b=10), plot_bgcolor="white",
+        yaxis=dict(range=[lo - 0.30 * span, hi + 0.14 * span], tickformat=",", gridcolor="#e6e9ee", title="GJ (축 일부 생략)"),
+        xaxis=dict(showgrid=False))
+    arrow, word = ("▼", "감소") if diff < 0 else ("▲", "증가")
+    fig.add_annotation(x=x[-1], y=hi + 0.10 * span, xanchor="center", showarrow=False,
+                       text=f"<b>[{arrow} {abs(diff):,.0f} {word}]</b><br><span style='font-size:11px;color:#6b7280'>{by}년 대비 {v1 / v0:.1%}</span>",
+                       font=dict(size=13, color="#c0392b" if diff < 0 else "#1e7e34"))
+    show_chart(fig)
+
+    with st.expander("📋 용도별 상세표"):
+        t = pd.DataFrame({f"{by}년": df[by], f"{ty}년": df[ty], "증감": d, "증감률": (df[ty] / df[by].replace(0, np.nan) - 1)})
+        t.loc["합계"] = [v0, v1, diff, v1 / v0 - 1]
+        st.dataframe(t.style.format({f"{by}년": "{:,.0f}", f"{ty}년": "{:,.0f}", "증감": "{:+,.0f}", "증감률": "{:+.1%}"}, na_rep="-"),
+                     use_container_width=True)
+
+
 def main():
     st.title("🔥 도시가스 공급량 중장기 추정 (~2045)")
     st.caption("2035년까지 작성된 계획을 2045년까지 연장합니다. 가정용은 기온·공동주택 시나리오로, 나머지 용도는 추세 모델(데이터에서 계수 추정)로 계산합니다. (단위: GJ)")
@@ -1130,6 +1256,7 @@ def main():
 
     render_history_section(y0)
     hh = render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year, scope2)
+    render_final_summary()
     # 옵션2: 가정용 기존 계획(anchor+1~base_end)을 시뮬레이션 값으로 대체
     over = {}
     if scope2 and hh["apply"]:
