@@ -950,15 +950,16 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     kk5 = calib["k"].iloc[-5:]
     k_slope = np.polyfit(kk5.index.values, np.log(kk5.values), 1)[0] if len(kk5) >= 3 else np.nan
     per = "월" if calib["level"] == "월" else "일"
-    # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) ──
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"{anchor_year}년 취사/개별난방" + (" (확정)" if scope2 else ""), f"{v5:,.0f}")
-    k2.metric("2040년", f"{sim.loc[2040, 'v5']:,.0f}", f"{sim.loc[2040, 'v5'] / v5 - 1:+.1%}")
-    k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'v5']:,.0f}", f"{sim.loc[TARGET_END, 'v5'] / v5 - 1:+.1%}")
-    k4.metric(f"{TARGET_END}년 기온 효과 / 신규유입 효과",
-              f"{sim.loc[TARGET_END, 'R'] - 1:+.1%} / {sim.loc[TARGET_END, 'G'] - 1:+.1%}")
+    # ── 결과 요약 (취사/개별난방 기준, 중집난방 제외) : 비교 기준은 그래프 시작 연도(2026) ──
     hy_a = [y for y in hy if 2026 <= y <= anchor_year]
     hist5 = hist.loc[r5, hy_a].astype(float)
+    ref_y, v_ref = int(hist5.index[0]), float(hist5.iloc[0])
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(f"{ref_y}년 취사/개별난방" + (" (확정)" if ref_y <= anchor_year else ""), f"{v_ref:,.0f}")
+    k2.metric("2040년", f"{sim.loc[2040, 'v5']:,.0f}", f"{sim.loc[2040, 'v5'] / v_ref - 1:+.1%}")
+    k3.metric(f"{TARGET_END}년", f"{sim.loc[TARGET_END, 'v5']:,.0f}", f"{sim.loc[TARGET_END, 'v5'] / v_ref - 1:+.1%}")
+    k4.metric(f"기온 / 신규유입 효과 ({anchor_year}→{TARGET_END})",
+              f"{sim.loc[TARGET_END, 'R'] - 1:+.1%} / {sim.loc[TARGET_END, 'G'] - 1:+.1%}")
     M = 1e6
     figA = go.Figure()
     figA.add_trace(go.Scatter(x=hist5.index, y=hist5.values / M, mode="lines+markers",
@@ -983,17 +984,20 @@ def render_household_section(layout, hist, hy, labels, base_end, y0, anchor_year
     figA.update_layout(height=460, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
                        title=dict(text="취사/개별난방 물량 (중집난방 제외)", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     figB = go.Figure()
-    for nm, colr, w, yv in (("합계 변화율", "black", 4, (sim["v5"] / v5 - 1) * 100),
-                            ("기온 효과", "#ff7f0e", 2, (sim["R"] - 1) * 100),
-                            ("신규유입 효과", "#2ca02c", 2, (sim["G"] - 1) * 100)):
+    tot_x = list(hist5.index) + years
+    tot_y = list((hist5.values / v_ref - 1) * 100) + list((sim["v5"].values / v_ref - 1) * 100)
+    figB.add_trace(go.Scatter(x=tot_x, y=tot_y, mode="lines+markers", name="합계 변화율",
+                              line=dict(color="black", width=4), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
+    for nm, colr, yv in ((f"기온 효과 ({anchor_year}년 이후)", "#ff7f0e", (sim["R"] - 1) * 100),
+                         (f"신규유입 효과 ({anchor_year}년 이후)", "#2ca02c", (sim["G"] - 1) * 100)):
         figB.add_trace(go.Scatter(x=[anchor_year] + years, y=[0] + list(yv.values), mode="lines+markers", name=nm,
-                                  line=dict(color=colr, width=w), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
+                                  line=dict(color=colr, width=2), hovertemplate="%{x}년: %{y:+.2f}%<extra></extra>"))
     figB.add_hline(y=0, line_color="gray", line_width=1)
     figB.update_xaxes(dtick=2, tickformat="d")
-    ymax = max(10.0, 1.6 * max(abs((sim["R"] - 1) * 100).max(), abs((sim["G"] - 1) * 100).max(), abs((sim["v5"] / v5 - 1) * 100).max()))
-    figB.update_yaxes(title=f"{anchor_year}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
+    ymax = max(10.0, 1.6 * max(abs((sim["R"] - 1) * 100).max(), abs((sim["G"] - 1) * 100).max(), max(abs(v) for v in tot_y)))
+    figB.update_yaxes(title=f"{ref_y}년 대비 (%)", ticksuffix="%", range=[-ymax, ymax])
     figB.update_layout(height=420, margin=dict(t=70, b=10), legend=dict(orientation="h", y=-0.22),
-                       title=dict(text=f"{anchor_year}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
+                       title=dict(text=f"{ref_y}년 대비 변화율과 요인 분해", x=0.01, xanchor="left", y=0.96, font=dict(size=15)))
     show_chart(figA)
     show_chart(figB)
     st.caption(f"중집난방은 취사/개별난방과 같은 비율로 증감합니다: {anchor_year}년 {v6:,.0f} → "
