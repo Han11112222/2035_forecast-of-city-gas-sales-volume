@@ -1125,7 +1125,7 @@ def render_final_summary():
         with open(repo_p, "rb") as f:
             fin_bytes, fin_name = f.read(), os.path.basename(repo_p)
     else:
-        st.caption("저장소에 최종 확정 파일(예: 최종_공급량.xlsx)이 없습니다. 엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 폭포수 차트가 나타납니다.")
+        st.caption("저장소에 최종 확정 파일(예: 최종_공급량.xlsx)이 없습니다. 엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 차트가 나타납니다.")
         return
     try:
         df, total, sheet = parse_final_workbook(fin_bytes)
@@ -1161,7 +1161,7 @@ def render_final_summary():
     k1.metric(f"① {by} 확정", f"{v0:,.0f} GJ")
     k2.metric(f"② {ty} 확정", f"{v1:,.0f} GJ", f"{diff:+,.0f} ({v1 / v0:.1%})")
 
-    st.markdown(f"#### ① {by}년 대비 {ty}년 용도별 증감 폭포수")
+    st.markdown(f"#### ① {by}년 대비 {ty}년 용도별 증감")
     x = [f"{by}년 확정"] + [k for k, _ in items] + [f"{ty}년 확정"]
     meas = ["absolute"] + ["relative"] * len(items) + ["total"]
     ys = [v0] + [v for _, v in items] + [v1]
