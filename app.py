@@ -1090,16 +1090,45 @@ def parse_final_workbook(data: bytes):
     return df, total, ws.title
 
 
+FIN_FIXED_NAME = "최종_공급량.xlsx"
+
+
+def _final_repo_path():
+    """저장소의 최종 확정 파일: '최종_공급량.xlsx'(고정 이름) 우선, 없으면 이름에 '최종' 또는 '수정필요'가 들어간 엑셀(이름순 마지막)"""
+    import glob
+    try:
+        bases = [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]
+    except NameError:
+        bases = [os.getcwd()]
+    for d in bases:
+        p = os.path.join(d, FIN_FIXED_NAME)
+        if os.path.exists(p):
+            return p
+        c = sorted(f for f in glob.glob(os.path.join(d, "*.xlsx"))
+                   if not os.path.basename(f).startswith("~$")
+                   and ("최종" in os.path.basename(f) or "수정필요" in os.path.basename(f)))
+        if c:
+            return c[-1]
+    return None
+
+
 def render_final_summary():
     st.markdown("---")
     st.markdown("### 📊 전체 공급량 요약 보기")
-    up = st.file_uploader("최종 확정 공급량 엑셀 업로드 (2026∼2045)", type=["xlsx"], key="fin_up",
-                          help="담당부서 자료까지 반영해 확정한 전체 공급량 엑셀입니다. '구 분' 행에 연도, 아래로 용도별 행과 '합계' 행이 있는 형식이면 됩니다.")
-    if up is None:
-        st.caption("엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 폭포수 차트가 나타납니다.")
+    repo_p = _final_repo_path()
+    up = st.file_uploader("다른 파일로 보려면 엑셀 업로드 (선택)" if repo_p else "최종 확정 공급량 엑셀 업로드 (2026∼2045)",
+                          type=["xlsx"], key="fin_up",
+                          help="저장소에 올려둔 최종 확정 파일을 먼저 읽고, 여기에 파일을 올리면 올린 파일을 우선 사용합니다.")
+    if up is not None:
+        fin_bytes, fin_name = up.getvalue(), up.name
+    elif repo_p:
+        with open(repo_p, "rb") as f:
+            fin_bytes, fin_name = f.read(), os.path.basename(repo_p)
+    else:
+        st.caption("저장소에 최종 확정 파일(예: 최종_공급량.xlsx)이 없습니다. 엑셀을 올리면 기준연도 대비 대상연도의 용도별 증감 폭포수 차트가 나타납니다.")
         return
     try:
-        df, total, sheet = parse_final_workbook(up.getvalue())
+        df, total, sheet = parse_final_workbook(fin_bytes)
     except Exception as e:
         st.error(f"파일을 읽지 못했습니다: {e}")
         return
@@ -1109,7 +1138,7 @@ def render_final_summary():
     by = c1.selectbox("기준연도", years, index=0, key="fin_by")
     ty = c2.selectbox("대상연도", [y for y in years if y != by], index=len([y for y in years if y != by]) - 1, key="fin_ty")
     simple = c3.toggle("심플버전", value=True, key="fin_simple", help="켜면 가정용·산업용·수송용·연료전지·기타로 묶어서, 끄면 용도별로 모두 보여줍니다.")
-    c4.caption(f"자료: 업로드 엑셀 '{sheet}' 시트 · 단위 GJ")
+    c4.caption(f"자료: {'업로드' if up is not None else '저장소'} 파일 '{fin_name}' · '{sheet}' 시트 · 단위 GJ")
 
     d = (df[ty] - df[by])
     if simple:
